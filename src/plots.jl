@@ -24,7 +24,8 @@
 ##
 
 import Plots
-
+import Plots: plot, plot!, Surface
+export plot, plot!
 
 """
 
@@ -189,7 +190,7 @@ function vectorfieldplot(fx::Function, fy::Function; xlim=(-5,5), ylim=(-5,5),  
 
     xs = x₀:Δx:x₁
     ys = y₀:Δy:y₁
-    p = plot(xlim=xlim, ylim=ylim, legend=false, kwargs...)
+    p = Plots.plot(xlim=xlim, ylim=ylim, legend=false, kwargs...)
 
     mx, my = 0.0, 0.0
 
@@ -204,7 +205,7 @@ function vectorfieldplot(fx::Function, fy::Function; xlim=(-5,5), ylim=(-5,5),  
     λ = .95 *  min(Δx/mx, Δy/my)
     
     for x in xs, y in ys
-        plot!([x, x + λ * fx(x,y)], [y, y + λ * fy(x,y)])
+        Plots.plot!([x, x + λ * fx(x,y)], [y, y + λ * fy(x,y)])
     end
     
     p
@@ -248,8 +249,8 @@ function vectorfieldplot{T<:SymbolicType}(exs::Vector{T},
         V, ylim = yvar[1], yvar[2:3]
     end
 
-    fx = _lambdify(exs[1], [U,V])
-    fy = _lambdify(exs[2], [U,V])
+    fx = SymEngine._lambdify(exs[1], [U,V])
+    fy = SymEngine._lambdify(exs[2], [U,V])
 
     vectorfieldplot(fx, fy; xlim=xlim, ylim=ylim, n=n, kwargs...)
 end
@@ -275,7 +276,7 @@ function contourplot(ex::SymbolicType,
                  kwargs...)
     U,V,xs,ys = _find_us_vs(ex, xvar, yvar, n)
     zs = mapsubs2(ex, U, xs, V,ys)
-    plot(xs, ys, zs, args...; linetype=:contour, kwargs...)
+    Plots.plot(xs, ys, zs, args...; linetype=:contour, kwargs...)
 end
 export(contourplot)
 
@@ -314,8 +315,8 @@ function plot_surface(ex::SymbolicType,
     
     U,V,xs,ys = _find_us_vs(ex, xvar, yvar, n)        
     zs = mapsubs2(ex, U, xs, V,ys)
-
-    Plots.surface(xs, ys, z=Surface(zs), args...; kwargs...)
+    
+    Plots.surface(xs, ys, z=Plots.Surface(zs), args...; kwargs...)
 end
 export plot_surface
 
@@ -435,7 +436,7 @@ end
 ## mimics Float64[ex(x,y) for x in xs, y in ys]
 function mapsubs2(ex::SymbolicType, x,xs, y, ys)
     out = Float64[]
-    fn = _lambdify(ex, [x,y])
+    fn = SymEngine._lambdify(ex, [x,y])
     out = [fn(u,v) for u in xs, v in ys]
     map(Float64, out)
 end
