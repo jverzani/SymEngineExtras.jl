@@ -5,6 +5,7 @@
 using SymEngine, SymEngineExtras
 using Plots
 Plots.plotly()
+using DThree
 
 @vars x y
 

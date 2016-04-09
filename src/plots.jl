@@ -1,6 +1,6 @@
 ## add plotting commands
 ##
-## Based on Plots.jl v"0.5.4".  In particular, this assume Julia v"0.4"
+## Based on Plots.jl v"0.5.5".  In particular, this assume Julia v"0.4"
 ##
 ##
 ## Our goal here is to give plotting a Julia interface
@@ -23,9 +23,131 @@
 ## vectorfieldplot([ex1, ex2], (xvar, a, b), (yvar, a, b)) for a vector field plot
 ##
 
+
+
+
+
 import Plots
 import Plots: plot, plot!, Surface
 export plot, plot!
+
+
+################################################## Plots...
+### Plug into Plots interface. Where there is something defined for Functions we
+### define for symbolic expressions
+
+import Plots: process_inputs
+
+typealias SymOrSyms Union{Basic, SymEngine.BasicType, Plots.AVec{Basic},Plots.AVec{BasicType}}
+
+function mapSymOrSyms(f::SymbolicType, xs::Plots.AVec)
+    u = free_symbols(f)[1]
+    mapsubs(f, u, xs) ## much faster than Float64[ex(x) for x in xs]
+end
+    
+mapSymOrSyms(fs::Plots.AVec{SymbolicType}, xs::Plots.AVec) = [mapSymOrSyms(f, xs) for f in fs]
+
+Plots.convertToAnyVector(ex::SymbolicType; kw...) = Any[lambidfy(ex)], nothing
+Plots.convertToAnyVector(ex::SymbolicType, d::Plots.KW; kw...) = Any[lambdify(ex)], nothing
+Plots.convertToAnyVector(ex::SymbolicType, d::Dict; kw...) = Any[lambdify(ex)], nothing
+
+function Plots.compute_y(xs, ex::SymbolicType)
+    u = free_symbols(ex)[1]
+    mapsubs(ex, u, xs)
+end
+
+
+## this functions gets called along the way to making a plot
+## here we modify expressions into functions
+# function without range... use the current range of the x-axis
+function Plots.process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, f::SymOrSyms)
+    Plots.process_inputs(plt, d, map(lambdify,f))
+end
+
+
+# if functions come first, just swap the order (not to be confused with parametric functions...
+# as there would be more than one function passed in)
+function process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, f::SymOrSyms, x)
+    @assert !(typeof(x) <: SymOrSyms)  # otherwise we'd hit infinite recursion here
+    Plots.process_inputs(plt, d, x, map(lambdify,f))
+end
+
+function process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, f::SymOrSyms, xmin::Number, xmax::Number)
+    process_inputs(plt, d, map(lambdify,f), xmin, xmax)
+end
+
+process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, u::Plots.AVec{T}) = process_inputs(plt, d, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u))
+
+#process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, u::Plots.AVec{T}, fx::SymOrSyms, fy::SymOrSyms) = process_inputs(plt, d, map#SymOrSyms(fx, u), mapSymOrSyms(fy, u))
+
+process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, umin::Number, umax::Number, numPoints::Int = 1000) = process_inputs(plt, d, fx, fy, linspace(umin, umax, numPoints))
+
+# special handling... 3D parametric function(s)
+process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, fz::SymOrSyms, u::Plots.AVec{T}) = process_inputs(plt, d, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u), mapSymOrSyms(fz, u))
+
+##process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, u::Plots.AVec{T}, fx::SymOrSyms, fy::SymOrSyms, fz::SymOrSyms) = process_inputs(plt, d, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u), mapSymOrSyms(fz, u))
+
+process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, fz::SymOrSyms, umin::Number, umax::Number, numPoints::Int = 1000) = process_inputs(plt, d, fx, fy, fz, linspace(umin, umax, numPoints))
+
+
+##################################################
+## helper function
+
+## evaluate vals for object
+function mapsubs(ex::SymbolicType, x::SymbolicType, vals::AbstractVector)
+    out = Float64[]
+    out = map(lambdify(ex), vals)
+    map(Float64, out)
+end
+
+## This is similar to the above, but is used for two variables. It
+## mimics Float64[ex(x,y) for x in xs, y in ys]
+function mapsubs2(ex::SymbolicType, x,xs, y, ys)
+    out = Float64[]
+    fn = SymEngine._lambdify(ex, [x,y])
+    out = [fn(u,v) for u in xs, v in ys]
+    map(Float64, out)
+end
+
+
+
+## prepare parametic takes exs, [t0,t1] and returns [xs, ys] or [xs, ys, zs]
+function _prepare_parametric(exs, t0, t1, n=250)
+    vars = free_symbols(exs)
+    nexs = length(exs)
+    (nexs==2) | (nexs==3) || throw(DimensionMismatch("parametric plot requires the initial tuple to have 2 or 3 variables"))
+    length(vars) == 1 ||  error("parametric plot allows only one free variable")
+
+    ts = linspace(t0, t1, n)
+    [Float64[convert(Float64, convert(Function, exs[i])(t)) for t in ts] for i in 1:nexs] # [[xs...], [ys...], [zs...]]
+end
+
+## parse (ex, ([x], a, b), ([y], c,d)) into variables x,y and ranges xs, ys.
+function _find_us_vs(ex, xvar, yvar, n=100)
+    vars = free_symbols(ex)
+    if length(xvar) == 2
+        U = vars[1]
+        x1,x2 = xvar
+    else
+        U, x1, x2 = xvar
+    end
+    if length(yvar) == 2
+        V = vars[2]
+        y1,y2 = yvar
+    else
+        V, y1, y2 = yvar
+    end
+    xs = linspace(x1, x2, n)
+    ys = linspace(y1, y2, n)
+    U, V, xs, ys
+end
+
+
+
+
+##################################################
+
+
 
 """
 
@@ -138,8 +260,8 @@ plot_parametric_surface((r*sin(theta)*sin(phi), r*sin(theta)*cos(phi), r*cos(the
 (The SymPy name for this function is `plot3d_parametric_surface`, we have dropped the "`3d`" part.)
 
 """
-sympy_plotting = nothing
-export sympy_plotting
+symengine_plotting = nothing
+export symengine_plotting
 
 ## Our alternatives
 """
@@ -149,15 +271,29 @@ Create a parametric plot of the expressions over the interval `[a,b]`.
 (A more explicit call of the type `plot(ex1, ex2, a, b)`.
 """
 function parametricplot(ex1::SymbolicType, ex2::SymbolicType, a::Real, b::Real, args...; kwargs...)
-    Plots.plot(ex1, ex2, a,b, args...; kwargs...)
+    _parametricplot(Plots.plot, ex1,ex2,a,b, args...; kwargs...)
 end
+function parametricplot!(ex1::SymbolicType, ex2::SymbolicType, a::Real, b::Real, args...; kwargs...)
+    _parametricplot(Plots.plot!, ex1,ex2,a,b, args...; kwargs...)
+end
+function _parametricplot(fn, ex1::SymbolicType, ex2::SymbolicType, a::Real, b::Real, args...; kwargs...)
+    fn(ex1, ex2, a,b, args...; kwargs...)
+end
+
 function parametricplot(ex1::SymbolicType, ex2::SymbolicType, ex3::SymbolicType, a::Real, b::Real, args...; n=250, kwargs...)
+    _parametricplot(Plots.path3d, ex1, ex2, ex3, a, b, args...; n=n, kwargs...)
+end
+function parametricplot!(ex1::SymbolicType, ex2::SymbolicType, ex3::SymbolicType, a::Real, b::Real, args...; n=250, kwargs...)
+    _parametricplot(Plots.path3d!, ex1, ex2, ex3, a, b, args...; n=n, kwargs...)
+end
+function _parametricplot(fn, ex1::SymbolicType, ex2::SymbolicType, ex3::SymbolicType, a::Real, b::Real, args...; n=250, kwargs...)
     ts = linspace(a, b,n)
     x = free_symbols([ex1, ex2, ex2])[1]
     xs, ys, zs = [mapsubs(ex,x,ts) for ex in [ex1, ex2, ex3]]
-    Plots.path3d(xs, ys, z=zs, args...; kwargs...)
+    fn(xs, ys, z=zs, args...; kwargs...)
 end
 export(parametricplot)
+export(parametricplot!)
 
 
 """
@@ -181,7 +317,12 @@ plot!(y, 1, 5, linewidth=3)
 ```
 
 """
-function vectorfieldplot(fx::Function, fy::Function; xlim=(-5,5), ylim=(-5,5),  n::Int=15, kwargs...)
+vectorfieldplot(fx::Function, fy::Function; xlim=(-5,5), ylim=(-5,5),  n::Int=10, kwargs...) =
+    _vectorfieldplot(Plots.quiver, fx, fy; xlim=xlim, ylim=ylim,n=n, kwargs...)
+vectorfieldplot!(fx::Function, fy::Function; xlim=(-5,5), ylim=(-5,5),  n::Int=10, kwargs...) =
+        _vectorfieldplot(Plots.quiver!, fx, fy; xlim=xlim, ylim=ylim,n=n, kwargs...)
+
+function _vectorfieldplot(fn, fx::Function, fy::Function; xlim=(-5,5), ylim=(-5,5),  n::Int=10, kwargs...)
 
     x₀, x₁ = xlim
     y₀, y₁ = ylim
@@ -190,26 +331,35 @@ function vectorfieldplot(fx::Function, fy::Function; xlim=(-5,5), ylim=(-5,5),  
 
     xs = x₀:Δx:x₁
     ys = y₀:Δy:y₁
-    p = Plots.plot(xlim=xlim, ylim=ylim, legend=false, kwargs...)
+#    p = Plots.plot(xlim=xlim, ylim=ylim, legend=false, kwargs...)
 
     mx, my = 0.0, 0.0
 
-    ## two loops, first to identify scaling factor so
-    ## lines stay within box of width Δx by Δy
-    for x in xs, y in ys
-        mx = max(mx, abs(fx(x,y)))
-        my = max(my, abs(fy(x,y)))
-    end
+
+    us = vec(broadcast((x,y) -> x, xs, ys'))
+    vs = vec(broadcast((x,y) -> y, xs, ys'))
+    dus = map(fx, us, vs)
+    dvs = map(fy, us, vs)
 
     ## we want all lines to be in the box, so we scale
+    mx = maximum(abs(dus))
+    my = maximum(abs(dvs))
     λ = .95 *  min(Δx/mx, Δy/my)
+
+    ## println(us)
+    ## println(vs)
+    ## println(λ *dus)
+    ## println(λ *dvs)
     
-    for x in xs, y in ys
-        Plots.plot!([x, x + λ * fx(x,y)], [y, y + λ * fy(x,y)])
-    end
+    p = fn( us, vs, quiver= (λ * dus,  λ * dvs); kwargs...)
+    
+#    for x in xs, y in ys
+#        Plots.plot!([x, x + λ * fx(x,y)], [y, y + λ * fy(x,y)])
+#    end
     
     p
 end
+
 
 """
 
@@ -223,7 +373,17 @@ Example
 vectorfieldplot([-y, x], (x, -5, 5), (y, -5, 5))
 ```
 """
-function vectorfieldplot{T<:SymbolicType}(exs::Vector{T},
+function vectorfieldplot{T<:SymbolicType}(exs::Vector{T}, xvar=(-5.0, 5.0), yvar=(-5.0, 5.0);n::Int=15,
+                                          kwargs...)
+    _vectorfieldplot(vectorfieldplot, exs, xvar, yvar; n=n, kwargs...)
+end
+function vectorfieldplot!{T<:SymbolicType}(exs::Vector{T}, xvar=(-5.0, 5.0), yvar=(-5.0, 5.0);n::Int=15,
+                                          kwargs...)
+    _vectorfieldplot(vectorfieldplot!, exs, xvar, yvar; n=n, kwargs...)
+end
+
+function _vectorfieldplot{T<:SymbolicType}(fn,
+                                           exs::Vector{T},
             xvar=(-5.0, 5.0),
             yvar=(-5.0, 5.0);
             n::Int=15,
@@ -252,9 +412,9 @@ function vectorfieldplot{T<:SymbolicType}(exs::Vector{T},
     fx = SymEngine._lambdify(exs[1], [U,V])
     fy = SymEngine._lambdify(exs[2], [U,V])
 
-    vectorfieldplot(fx, fy; xlim=xlim, ylim=ylim, n=n, kwargs...)
+    fn(fx, fy; xlim=xlim, ylim=ylim, n=n, kwargs...)
 end
-export vectorfieldplot
+export vectorfieldplot, vectorfieldplot!
 
 
 """
@@ -267,18 +427,26 @@ the associated variable inferred using the ordering of `free_symbols`.
 `plot(xs, ys, ex::Sym)`.)
 
 """
-function contourplot(ex::SymbolicType,
-                 xvar=(-5.0, 5.0),
-                 yvar=(-5.0, 5.0),
-                 args...;
-                     n::Int=50,
-                     linetype=:contour,
-                 kwargs...)
+function contourplot(ex::SymbolicType, xvar=(-5.0, 5.0), yvar=(-5.0, 5.0), args...;
+            n::Int=50, linetype=:contour, kwargs...)
+    _contourplot(Plots.plot, ex, xvar, yvar, args...; n=n, kwargs...)
+end
+function contourplot!(ex::SymbolicType, xvar=(-5.0, 5.0), yvar=(-5.0, 5.0), args...;
+            n::Int=50, linetype=:contour, kwargs...)
+    _contourplot(Plots.plot!, ex, xvar, yvar, args...; n=n, kwargs...)
+end
+function _contourplot(fn, ex::SymbolicType,
+                      xvar=(-5.0, 5.0),
+                      yvar=(-5.0, 5.0),
+                      args...;
+                      n::Int=50,
+                      kwargs...)
     U,V,xs,ys = _find_us_vs(ex, xvar, yvar, n)
     zs = mapsubs2(ex, U, xs, V,ys)
-    Plots.plot(xs, ys, zs, args...; linetype=:contour, kwargs...)
+    fn(xs, ys, zs, args...; linetype=:contour, kwargs...)
 end
 export(contourplot)
+export(contourplot!)
 
 ## XXX Rename these?? surface?)
 ## surface plot. Uses surface()
@@ -361,117 +529,6 @@ export plot_surface
 ## export plot_parametric_surface
 
 
-##################################################
-### Plug into Plots interface. Where there is something defined for Functions we
-### define for symbolic expressions
-## Additions to Plots so that expressions are treated like functions
 
-typealias SymOrSyms Union{SymbolicType, Plots.AVec{Basic},Plots.AVec{BasicType}}
-
-Plots.convertToAnyVector(ex::SymbolicType; kw...) = Any[ex], nothing
-Plots.convertToAnyVector(ex::SymbolicType, d::Dict; kw...) = Any[ex], nothing
-
-function Plots.computeY(xs, ex::SymbolicType)
-    u = free_symbols(ex)[1]
-    mapsubs(ex, u, xs)
-end
-
-
-function mapSymOrSyms(f::SymbolicType, xs::Plots.AVec)
-    u = free_symbols(f)[1]
-    mapsubs(f, u, xs) ## much faster than Float64[ex(x) for x in xs]
-end
-    
-mapSymOrSyms(fs::Plots.AVec{SymbolicType}, xs::Plots.AVec) = [mapSymOrSyms(f, xs) for f in fs]
-
-## # contours or surfaces... 
-function Plots.createKWargsList{T<:Real,S<:Real}(plt::Plots.Plot, x::Plots.AVec{T}, y::Plots.AVec{S}, zf::SymbolicType; kw...)
-    # only allow sorted x/y for now
-    # TODO: auto sort x/y/z properly
-    @assert x == sort(x)
-    @assert y == sort(y)
-
-    fs=free_symbols(zf)
-    surface = mapsubs2(zf, fs[1], x, fs[2], y)
-    Plots.createKWargsList(plt, x, y, surface; kw...)  # passes it to the zmat version
-end
-
-
-# list of expressions
-function Plots.createKWargsList(plt::Plots.Plot, f::SymOrSyms, x; kw...)
-    @assert !(typeof(x) <: SymbolicType)  # otherwise we'd hit infinite recursion here
-    Plots.createKWargsList(plt, x, f; kw...)
-end
-
-# special handling... xmin/xmax with function(s)
-function Plots.createKWargsList(plt::Plots.Plot, f::SymOrSyms, xmin::Real, xmax::Real; kw...)
-    width = plt.plotargs[:size][1]
-    x = collect(linspace(xmin, xmax, width))  # we don't need more than the width
-    Plots.createKWargsList(plt, x, f; kw...)
-end
-
-# special handling... xmin/xmax with parametric function(s)
-Plots.createKWargsList{T<:Real}(plt::Plots.Plot, fx::SymbolicType, fy::SymbolicType, u::Plots.AVec{T}; kw...) =
-    Plots.createKWargsList(plt, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u); kw...)
-    
-
-Plots.createKWargsList{T<:Real}(plt::Plots.Plot, u::Plots.AVec{T}, fx::SymOrSyms, fy::SymOrSyms; kw...) =
-    Plots.createKWargsList(plt, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u); kw...)
-
-
-Plots.createKWargsList(plt::Plots.Plot, fx::SymbolicType, fy::SymbolicType, umin::Real, umax::Real, numPoints::Int = 1000; kw...) =
-    Plots.createKWargsList(plt, fx, fy, linspace(umin, umax, numPoints); kw...)
-
-##################################################
-## Helper functions
-
-## evaluate vals for object
-function mapsubs(ex::SymbolicType, x::SymbolicType, vals::AbstractVector)
-    out = Float64[]
-    out = map(lambdify(ex), vals)
-    map(Float64, out)
-end
-
-## This is similar to the above, but is used for two variables. It
-## mimics Float64[ex(x,y) for x in xs, y in ys]
-function mapsubs2(ex::SymbolicType, x,xs, y, ys)
-    out = Float64[]
-    fn = SymEngine._lambdify(ex, [x,y])
-    out = [fn(u,v) for u in xs, v in ys]
-    map(Float64, out)
-end
-
-
-
-## prepare parametic takes exs, [t0,t1] and returns [xs, ys] or [xs, ys, zs]
-function _prepare_parametric(exs, t0, t1, n=250)
-    vars = free_symbols(exs)
-    nexs = length(exs)
-    (nexs==2) | (nexs==3) || throw(DimensionMismatch("parametric plot requires the initial tuple to have 2 or 3 variables"))
-    length(vars) == 1 ||  error("parametric plot allows only one free variable")
-
-    ts = linspace(t0, t1, n)
-    [Float64[convert(Float64, convert(Function, exs[i])(t)) for t in ts] for i in 1:nexs] # [[xs...], [ys...], [zs...]]
-end
-
-## parse (ex, ([x], a, b), ([y], c,d)) into variables x,y and ranges xs, ys.
-function _find_us_vs(ex, xvar, yvar, n=100)
-    vars = free_symbols(ex)
-    if length(xvar) == 2
-        U = vars[1]
-        x1,x2 = xvar
-    else
-        U, x1, x2 = xvar
-    end
-    if length(yvar) == 2
-        V = vars[2]
-        y1,y2 = yvar
-    else
-        V, y1, y2 = yvar
-    end
-    xs = linspace(x1, x2, n)
-    ys = linspace(y1, y2, n)
-    U, V, xs, ys
-end
 
 
