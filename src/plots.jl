@@ -35,59 +35,26 @@ export plot, plot!
 ################################################## Plots...
 ### Plug into Plots interface. Where there is something defined for Functions we
 ### define for symbolic expressions
-
-import Plots: process_inputs
-
-typealias SymOrSyms Union{Basic, SymEngine.BasicType, Plots.AVec{Basic},Plots.AVec{BasicType}}
-
-function mapSymOrSyms(f::SymbolicType, xs::Plots.AVec)
-    u = free_symbols(f)[1]
-    mapsubs(f, u, xs) ## much faster than Float64[ex(x) for x in xs]
+function Plots._apply_recipe(d::Plots.KW, v1, v2, f::Basic, args...; kw...)
+    (v1, v2, lambdify(f))
 end
-    
-mapSymOrSyms(fs::Plots.AVec{SymbolicType}, xs::Plots.AVec) = [mapSymOrSyms(f, xs) for f in fs]
 
-Plots.convertToAnyVector(ex::SymbolicType; kw...) = Any[lambidfy(ex)], nothing
-Plots.convertToAnyVector(ex::SymbolicType, d::Plots.KW; kw...) = Any[lambdify(ex)], nothing
-Plots.convertToAnyVector(ex::SymbolicType, d::Dict; kw...) = Any[lambdify(ex)], nothing
+function Plots._apply_recipe(d::Plots.KW, s::Basic, args...; kw...)
+    (lambdify(s), args...)
+end
+function Plots._apply_recipe(d::Plots.KW, v::AbstractVector{Basic}, args...; kw...)
+    (map(lambdify, v), args...)
+end
 
-function Plots.compute_y(xs, ex::SymbolicType)
-    u = free_symbols(ex)[1]
-    mapsubs(ex, u, xs)
+function Plots._apply_recipe(d::Plots.KW, mf1::Basic, mf2::Basic, args...; kw...)
+    (lambdify(mf1), lambdify(mf2), args...)
+end
+
+function Plots._apply_recipe(d::Plots.KW, mf1::Basic, mf2::Basic, mf3::Basic, args...; kw...)
+    (lambdify(mf1), lambdify(mf2), lambdify(mf3), args...)
 end
 
 
-## this functions gets called along the way to making a plot
-## here we modify expressions into functions
-# function without range... use the current range of the x-axis
-function Plots.process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, f::SymOrSyms)
-    Plots.process_inputs(plt, d, map(lambdify,f))
-end
-
-
-# if functions come first, just swap the order (not to be confused with parametric functions...
-# as there would be more than one function passed in)
-function process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, f::SymOrSyms, x)
-    @assert !(typeof(x) <: SymOrSyms)  # otherwise we'd hit infinite recursion here
-    Plots.process_inputs(plt, d, x, map(lambdify,f))
-end
-
-function process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, f::SymOrSyms, xmin::Number, xmax::Number)
-    process_inputs(plt, d, map(lambdify,f), xmin, xmax)
-end
-
-process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, u::Plots.AVec{T}) = process_inputs(plt, d, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u))
-
-#process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, u::Plots.AVec{T}, fx::SymOrSyms, fy::SymOrSyms) = process_inputs(plt, d, map#SymOrSyms(fx, u), mapSymOrSyms(fy, u))
-
-process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, umin::Number, umax::Number, numPoints::Int = 1000) = process_inputs(plt, d, fx, fy, linspace(umin, umax, numPoints))
-
-# special handling... 3D parametric function(s)
-process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, fz::SymOrSyms, u::Plots.AVec{T}) = process_inputs(plt, d, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u), mapSymOrSyms(fz, u))
-
-##process_inputs{T<:Number}(plt::Plots.AbstractPlot, d::Plots.KW, u::Plots.AVec{T}, fx::SymOrSyms, fy::SymOrSyms, fz::SymOrSyms) = process_inputs(plt, d, mapSymOrSyms(fx, u), mapSymOrSyms(fy, u), mapSymOrSyms(fz, u))
-
-process_inputs(plt::Plots.AbstractPlot, d::Plots.KW, fx::SymOrSyms, fy::SymOrSyms, fz::SymOrSyms, umin::Number, umax::Number, numPoints::Int = 1000) = process_inputs(plt, d, fx, fy, fz, linspace(umin, umax, numPoints))
 
 
 ##################################################
