@@ -67,7 +67,7 @@ function pattern_match(ex, pat, matches=Dict())
     get_symengine_class(ex) == get_symengine_class(pat)  || return PatternMatch(false, Dict())
     
     eas, pas = get_args(ex), get_args(pat)
-    out = _match_args(eas, pas, matches)
+    out = _match_args(eas, pas, matches, get_symengine_class(ex))
 
     ## for Mul and Add we need to consider commutivity!
     if !out.match
@@ -139,7 +139,8 @@ function _match_args(eas, pas, matches, op=:_)
                 break
             end
         end
-        eas = vcat(head_eas, op == :Mul ? prod(bas) : sum(bas), tail_eas)
+        mids = op == :Mul ? prod(bas) : sum(bas)
+        eas = vcat(head_eas, mids, tail_eas)
     end
 
     for (e,p) in zip(eas, pas)

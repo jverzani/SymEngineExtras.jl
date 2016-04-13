@@ -49,14 +49,12 @@ function logsimp(ex::Basic; recurse::Bool=true)
 end
 
 function logsimp(ex::BasicType{Val{:Mul}})
-    
+
+    ## a log(b) -> log(b^a)
     m = pattern_match(ex, _1 * log(_2))
     if m.match
-        return log(m.matches[_2]^m.matches[_1])
-    end
-    m = pattern_match(ex, log(_2) * _1)
-    if m.match
-        return log(m.matches[_2]^m.matches[_1])
+        a, b = [get(m.matches, k, Basic(1)) for k in (_1, _2)]
+        return log(b^a)
     end
     prod(map(logsimp, get_args(ex)))
 end
@@ -150,30 +148,29 @@ function powsimp(ex::Basic; recurse::Bool=true)
 end
 
 function powsimp(ex::BasicType{Val{:Pow}})
-    as = get_args(ex)
-    if get_symengine_class(as[2]) == :Mul
-        bs = get_args(as[2])
-        (as[1]^bs[1])^powsimp(bs[2])
-    else
-        as[1]^powsimp(as[2])
+    ## x^(ax) -> (x^a)^x
+    m = pattern_match(ex, _1^(_2*___))
+    if m.match
+        a,b,c = [get(m.matches, k , Basic(1)) for k in (_1, _2, ___)]
+        ex = (a^b)^c
     end
+
+    ex
 end
 
     
 ## 
 function powsimp(ex::BasicType{Val{:Mul}})
-
     # x^n * y^n -> (x*y)^n
     out = pattern_match(ex, _1^_2 * _3^2 * ___)
     if out.match
-        a,b,n,c = out.matches[_1], out.matches[_3], out.matches[_2], get(out.matches,___, Basic(1))
+        a,b,n,c = [get(out.matches, k, Basic(1)) for k in (_1, _3, _2, ___)]
         ex = (a * b)^n * c
     end
 
     out = pattern_match(ex, _1^2 * _1^_3 * ___)
     if out.match
-        a,n,m,c = out.matches[_1], out.matches[_2], out.matches[_3], get(out.matches,___, Basic(1))
-        println((ex, a,b,c,n))
+        a,n,m,c = [get(out.matches, k, Basic(1)) for k in (_1, _2, _3, ___)]
         ex = a^(n+m) * c
     end
     
@@ -241,14 +238,14 @@ function expand_power_exp(ex::Basic; recurse::Bool=true)
 end
 
 function expand_power_exp(ex::BasicType{Val{:Pow}})
-    as = get_args(ex)
-    if get_symengine_class(as[2]) == :Add
-        bs = get_args(as[2])
-        trms = [as[1]^expand_power_exp(b) for b in bs]
-        prod(trms)
-    else
-        as[1]^expand_power_exp(as[2])
+    out = pattern_match(ex, _1^(_2 + _3 + ___))
+    if out.match
+        x,a,b,c = [get(out.matches, k, Basic(0)) for k in (_1, _2, _3, ___)]
+        b = b + c
+        a, b = map(expand_power_exp, (a,b))
+        ex = x^a * x^b
     end
+    ex
 end
 
 function expand_power_exp(ex::BasicType)
@@ -272,14 +269,12 @@ function expand_power_base(ex::Basic; recurse::Bool=true)
 end
 
 function expand_power_base(ex::BasicType{Val{:Pow}})
-    as = get_args(ex)
-    if get_symengine_class(as[1]) == :Mul
-        bs = get_args(as[1])
-        trms = [b^expand_power_base(as[2]) for b in bs]
-        prod(trms)
-    else
-        as[1]^expand_power_base(as[2])
+    out = pattern_match(ex, (_1 *_2)^_3)
+    if out.match
+        x,y,a = [get(out.matches, k, Basic(1)) for k in (_1, _2, _3)]
+        ex = x^a * y^a
     end
+    ex
 end
 
 function expand_power_base(ex::BasicType)
@@ -371,15 +366,10 @@ function expand_trig(ex::Basic; recurse::Bool=true)
 end
 
 function expand_trig(ex::BasicType{Val{:Sin}})
-    arg = get_args(ex)[1]
-    ty = get_symengine_class(arg)
-
-    ## This is *not* perfect
-    ## sin(a + b + c) won't expand... Need _2 match to grab b + c
-    ## must treat * and + specially
-    m = pattern_match(ex, sin(_1 + _2))
+    m = pattern_match(ex, sin(_1 + _2 + ___))
     if m.match
-        a, b = m.matches[_1] , m.matches[_2]
+        a, b, c =[get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
+        b = b + c
         return sin(a)*cos(b) + sin(b) * cos(a)
     end
 
@@ -395,45 +385,16 @@ function expand_trig(ex::BasicType{Val{:Sin}})
         return sqrt((1 - cos(a))/2)
     end
 
+    arg = get_args(ex)[1]
     return sin(expand_trig(arg))
     
-
-
-    
-    ## ## handle sum
-    ## if ty == :Add
-    ##     bs = get_args(arg)
-    ##     a,b = bs[1], expand_trig(sum(bs[2:end]))
-    ##     return sin(a)*cos(b) + sin(b)*cos(a)
-    ## elseif ty == :Mul
-    ##     bs = get_args(arg)
-    ##     ts = map(get_symengine_class, bs)
-    ##     ns = prod([t in (:Integer,:Rational, :Complex) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-    ##     notns = prod([!(t in (:Integer,:Rational, :Complex)) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-    ##     a = expand_trig(notns)
-    ##     if ns == 2
-    ##         return 2 * sin(a) * cos(a)
-    ##     elseif ns == 1//2
-    ##         return sqrt((1 - cos(a))/2)
-    ##     else
-    ##         return sin(ns * a)
-    ##     end
-    ## else
-    ##     sin(expand_trig(arg))
-    ## end
 end
 
 
 function expand_trig(ex::BasicType{Val{:Cos}})
-    arg = get_args(ex)[1]
-    ty = get_symengine_class(arg)
-
-    ## This is *not* perfect
-    ## cos(a + b + c) won't expand... Need _2 match to grab b + c
-    ## must treat * and + specially
-    m = pattern_match(ex, cos(_1 + _2))
+    m = pattern_match(ex, cos(_1 + _2 + ___))
     if m.match
-        a, b = m.matches[_1] , m.matches[_2]
+        a, b = [get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
         return cos(a)*cos(b) - sin(a) * sin(b)
     end
 
@@ -449,44 +410,17 @@ function expand_trig(ex::BasicType{Val{:Cos}})
         return sqrt((1 + cos(a))/2)
     end
 
+    arg = get_args(ex)[1]
     return cos(expand_trig(arg))
     
-    ## ## handle sum
-    ## if ty == :Add
-    ##     bs = get_args(arg)
-    ##     a,b = bs[1], expand_trig(sum(bs[2:end]))
-    ##     return cos(a) * cos(b) - sin(a) * sin(b)
-    ## elseif ty == :Mul
-    ##     bs = get_args(arg)
-    ##     ts = map(get_symengine_class, bs)
-    ##     ns = prod([t in (:Integer,:Rational, :Complex) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-    ##     notns = prod([!(t in (:Integer,:Rational, :Complex)) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-    ##     a = expand_trig(notns)
-    ##     if ns == 2
-    ##         return cos(a)^2 - sin(a)^2
-    ##     elseif ns == 1//2
-    ##         return sqrt((1 + cos(a))/2)
-    ##     else
-    ##         return cos(ns * a)
-    ##     end
-    ## else
-    ##     cos(expand_trig(arg))
-    ## end
-        
 end
 
 
 function expand_trig(ex::BasicType{Val{:Tan}})
-    arg = get_args(ex)[1]
-    ty = get_symengine_class(arg)
-
-
-    ## This is *not* perfect
-    ## tan(a + b + c) won't expand... Need _2 match to grab b + c
-    ## must treat * and + specially
-    m = pattern_match(ex, tan(_1 + _2))
+    m = pattern_match(ex, tan(_1 + _2 + ___))
     if m.match
-        a, b = m.matches[_1] , m.matches[_2]
+        a, b, c = [get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
+        b = b + c
         return (tan(a) + tan(b)) / (1 - tan(a) * tan(b))
     end
 
@@ -502,114 +436,88 @@ function expand_trig(ex::BasicType{Val{:Tan}})
         return sin(a) / (1 + cos(a))
     end
 
+    arg = get_args(ex)[1]    
     return tan(expand_trig(arg))
     
-    
-    ## ## handle sum
-    ## if ty == :Add
-    ##     bs = get_args(arg)
-    ##     a,b = bs[1], expand_trig(sum(bs[2:end]))
-    ##     return (tan(a) + tan(b)) / (1 - tan(a) * tan(b))
-    ## elseif ty == :Mul
-    ##     bs = get_args(arg)
-    ##     ts = map(get_symengine_class, bs)
-    ##     ns = prod([t in (:Integer,:Rational, :Complex) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-    ##     notns = prod([!(t in (:Integer,:Rational, :Complex)) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-    ##     a = expand_trig(notns)
-    ##     if ns == 2
-    ##         return 2*tan(a) / (1 - tan(a)^2)
-    ##     elseif ns == 1//2
-    ##         return sin(a) / (1 + cos(a))
-    ##     else
-    ##         return tan(ns * notns)
-    ##     end
-    ## else
-    ##     tan(expand_trig(arg))
-    ## end
 end
 
 
 function expand_trig(ex::BasicType{Val{:Sinh}})
-    arg = get_args(ex)[1]
-    ty = get_symengine_class(arg)
-    
-    ## handle sum
-    if ty == :Add
-        bs = get_args(arg)
-        a,b = bs[1], expand_trig(sum(bs[2:end]))
-        return sinh(a)*cosh(b) + sinh(b)*cosh(a)
-    elseif ty == :Mul
-        bs = get_args(arg)
-        ts = map(get_symengine_class, bs)
-        ns = prod([t in (:Integer,:Rational, :Complex) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-        notns = prod([!(t in (:Integer,:Rational, :Complex)) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-        a = expand_trig(notns)
-        if ns == 2
-            return 2 * sinh(a) * cosh(a)
-        elseif ns == 1//2
-            return sqrt((cosh(a)-1)/2)
-        else
-            return sinh(ns * a)
-        end
-    else
-        sinh(expand_trig(arg))
+
+    m = pattern_match(ex, sinh(_1 + _2 + ___))
+    if m.match
+        a, b, c =[get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
+        b = b + c
+        return sinh(a)*cosh(b) + sinh(b) * cosh(a)
     end
+
+    m = pattern_match(ex, sinh(2 * _1))
+    if m.match
+        a = m.matches[_1]
+        return 2sinh(a)*cosh(a)
+    end
+
+    m = pattern_match(ex, sinh(_1 / 2))
+    if m.match
+        a = m.matches[_1]
+        return sqrt((cosh(a) - 1)/2)
+    end
+
+    arg = get_args(ex)[1]
+    return sinh(expand_trig(arg))
 end
 
-
+# https://en.wikipedia.org/wiki/Hyperbolic_function
 function expand_trig(ex::BasicType{Val{:Cosh}})
-    arg = get_args(ex)[1]
-    ty = get_symengine_class(arg)
-    
-    ## handle sum
-    if ty == :Add
-        bs = get_args(arg)
-        a,b = bs[1], expand_trig(sum(bs[2:end]))
-        return cosh(a) * cosh(b) + sinh(a) * sinh(b)
-    elseif ty == :Mul
-        bs = get_args(arg)
-        ts = map(get_symengine_class, bs)
-        ns = prod([t in (:Integer,:Rational, :Complex) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-        notns = prod([!(t in (:Integer,:Rational, :Complex)) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-        a = expand_trig(notns)
-        if ns == 2
-            return cosh(a)^2 + sinh(a)^2
-        elseif ns == 1//2
-            return sqrt((1 + cosh(a))/2)
-        else
-            return cosh(ns * a)
-        end
-    else
-        cosh(expand_trig(arg))
+
+    m = pattern_match(ex, cosh(_1 + _2 + ___))
+    if m.match
+        a, b, c =[get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
+        b = b + c
+        return sinh(a)*cosh(b) + sinh(b) * cosh(a)
     end
-        
+
+    m = pattern_match(ex, cosh(2 * _1))
+    if m.match
+        a = m.matches[_1]
+        return cosh(a)^2 + sinh(a)^2
+    end
+
+    m = pattern_match(ex, cosh(_1 / 2))
+    if m.match
+        a = m.matches[_1]
+        return sqrt((cosh(a) + 1)/2)
+    end
+
+    arg = get_args(ex)[1]
+    return cosh(expand_trig(arg))
 end
+   
 
 function expand_trig(ex::BasicType{Val{:Tanh}})
-    arg = get_args(ex)[1]
-    ty = get_symengine_class(arg)
-    
-    ## handle sum
-    if ty == :Add
-        bs = get_args(arg)
-        a,b = bs[1], expand_trig(sum(bs[2:end]))
+
+    m = pattern_match(ex, tanh(_1 + _2 + ___))
+    if m.match
+        a, b, c = [get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
+        b = b + c
         return (tanh(a) + tanh(b)) / (1 + tanh(a) * tanh(b))
-    elseif ty == :Mul
-        bs = get_args(arg)
-        ts = map(get_symengine_class, bs)
-        ns = prod([t in (:Integer,:Rational, :Complex) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-        notns = prod([!(t in (:Integer,:Rational, :Complex)) ? b : Basic(1) for (t,b) in zip(ts, bs)])
-        a = expand_trig(notns)
-        if ns == 2
-            return 2*tan(a) / (1 - tan(a)^2)
-        elseif ns == 1//2
-            return 2*sinh(a)*cos(a) / (2*cosh(a)^2 - 1)
-        else
-            return tanh(ns * notns)
-        end
-    else
-        tanh(expand_trig(arg))
     end
+
+    m = pattern_match(ex, tanh(2 * _1))
+    if m.match
+        a = m.matches[_1]
+        return  2*tanh(a) / (1 + tanh(a)^2)
+    end
+
+    m = pattern_match(ex, tanh(_1 / 2))
+    if m.match
+        a = m.matches[_1]
+        return (exp(x) - 1) / (exp(x) + 1)
+    end
+
+    arg = get_args(ex)[1]    
+    return tan(expand_trig(arg))
+    
 end
 
 function expand_trig(ex::BasicType)
@@ -625,69 +533,12 @@ end
 
 
 
-## ## how to pattern match
-## ## This needs generalizing!!
-## function pattern_match(x::Symbol)
-##     function(ex)
-##         get_symengine_class(ex) == x || return (false, nothing)
-##         return(true, get_args(ex)[1])
-##     end
-## end
-
-## function pattern_match_sq(x::Symbol)
-##     function (ex)
-##         get_symengine_class(ex) == :Pow || return (false, nothing)
-##         as = get_args(ex)
-##         get_symengine_class(as[1]) == x || return(false, nothing)
-##         (get_symengine_class(as[2]) in (:Integer,:Rational)) && as[2] >= 2 || return(false, nothing)
-##         return(true, get_args(as[1])[1])
-##     end
-## end
-
-## function pattern_match_neg_sq(x::Symbol)
-##     function (ex)
-##         get_symengine_class(ex) == :Mul || return (false, nothing)
-##         ## hack to check if neg
-##         get_symengine_class(-ex) != :Mul || return(false, nothing)
-##         ex = -ex
-##         get_symengine_class(ex) == :Pow || return (false, nothing)
-##         as = get_args(ex)
-##         get_symengine_class(as[1]) == x || return(false, nothing)
-##         (get_symengine_class(as[2]) in (:Integer,:Rational)) && as[2] >= 2 || return(false, nothing)
-##         return(true, get_args(as[1])[1])
-##     end
-## end
-
-## # matching sin(a)cos(b)
-## function pattern_match_prod(x1::Symbol, x2::Symbol)
-##     function(ex)
-##         get_symengine_class(ex) == :Mul || return(false, nothing)
-##         args = get_args(ex)
-##         length(args) == 2 || return(false, nothing)
-##         us = Bool[pattern_match(x1)(a)[1] for a in args]
-##         vs = Bool[pattern_match(x2)(a)[1] for a in args]
-##         any(us) && any(vs) || return(false, nothing)
-
-##         return (true, (get_args(args[us][1])[1], get_args(args[vs][1])[1]))
-##     end
-## end
-
-
-## function pattern_match_neg_prod(x1::Symbol, x2::Symbol)
-##     function (ex)
-##         pattern_match_prod(x1, x2)(-ex)
-##     end
-## end
-
-
-
 ## trigsimp
 ## 2sin(x)cos(x) -> sin(2x); 2sinh(x)cosh(x) -> sinh(2x)
 ## cos^2(x) - sin^2(x)
 
 
 function trigsimp(ex::Basic; recurse::Bool=true)
-    ex = rewrite_trig(ex, recurse=recurse)
     ex1 = Basic(trigsimp(BasicType(ex)))
     while recurse && ex1 != ex
         ex = ex1
@@ -704,122 +555,59 @@ function trigsimp(ex::BasicType{Val{:Mul}})
     ## sin(x) cos(x) -> sin(2x)/2
     out = pattern_match(ex, ___*sin(_1)*cos(_1))
     if out.match
-        a = out.matches[_1]
-        ex = ex / sin(a) / cos(a)
-        ex = ex * sin(2*a) / 2
+        a, c = [get(out.matches, k, Basic(0)) for k in (_1,  ___)]
+        a, c = map(trigsimp, (a,c))
+        ex = c * sin(2a) / 2
     end
 
-
-
-    
     ##
     ## sinh(x) cosh(x) -> sinh(2x)/2
     out = pattern_match(ex, ___*sinh(_1)*cosh(_1))
     if out.match
-        a = out.matches[_1]
-        ex = ex / sinh(a) / cosh(a)
-        ex = ex * sinh(2*a) / 2
+        a,c =  [get(out.matches, k, Basic(1)) for k in (_1,  ___)]
+        a, c = map(trigsimp, (a,c))        
+        ex = c * sinh(2a)/2
     end
 
     ## others?
-
-    
     ex
-
 end
 
 
 
-function trigsimp(ex::BasicType{Val{:XXX}})
-    as = get_args(ex)
+function trigsimp(ex::BasicType{Val{:Add}})
+    ## sin(a)cos(b) + sin(b)*cos(a) -> sin(a + b)
+    out = pattern_match( ex, sin(_1)*cos(_2) + sin(_2)*cos(_1) + ___)
+    if out.match
+        a,b,c = [get(out.matches, k, Basic(0)) for k in (_1, _2, ___)]
+        a, b, c = map(trigsimp, (a,b,c))                
+        ex = c + sin(a+b)
+    end
+
+
+    ## cos(a)cos(b) - sin(a)*sin(a) -> cos(a - b)
+    out = pattern_match( ex, cos(_1)*cos(_2) - sin(_1)*sin(_2))
+    if out.match
+        a,b,c = [get(out.matches, k, Basic(0)) for k in (_1, _2, ___)]
+        a, b, c = map(trigsimp, (a,b,c))                        
+        ex = c + cos(a+b)
+    end
+    
 
     ## cos(x)^2 - sin(x)^2  -> cos(2x)
-    us = filter(u -> u[1], map(pattern_match_neg_sq(:Sin), as))
-    vs = filter(u -> u[1], map(pattern_match_sq(:Cos), as))
-
-    arg_us = [u[2] for u in us]
-    arg_vs = [u[2] for u in vs]
-
-    
-    args = intersect(arg_us, arg_vs)
-
-    for a in args
-        ex = ex - cos(a)^2 + sin(a)^2
-        ex = ex + cos(2*a)
+    out = pattern_match( ex, cos(_1)^2 - sin(_1)^2 + ___)
+    if out.match
+        a,c = [get(out.matches, k, Basic(0)) for k in (_1,  ___)]
+        ex = c + cos(2a)
     end
 
     ## -cos(x)^2 + sin(x)^2  -> -cos(2x)
-    us = filter(u -> u[1], map(pattern_match_neg_sq(:Cos), as))
-    vs = filter(u -> u[1], map(pattern_match_sq(:Sin), as))
-
-    arg_us = [u[2] for u in us]
-    arg_vs = [u[2] for u in vs]
-
-    
-    args = intersect(arg_us, arg_vs)
-
-    for a in args
-        ex = ex + cos(a)^2 - sin(a)^2
-        ex = ex - cos(2*a)
+    out = pattern_match( ex, -cos(_1)^2 + sin(_1)^2 + ___)
+    if out.match
+        a,c = [get(out.matches, k, Basic(0)) for k in (_1,  ___)]
+        ex = c - cos(2a)
     end
 
-
-    ## cosh(x)^2 + sinh(x)^2  -> cosh(2x)
-    us = filter(u -> u[1], map(pattern_match_sq(:Sinh), as))
-    vs = filter(u -> u[1], map(pattern_match_sq(:Cosh), as))
-
-    arg_us = [u[2] for u in us]
-    arg_vs = [u[2] for u in vs]
-
-    
-    args = intersect(arg_us, arg_vs)
-
-    for a in args
-        ex = ex - cosh(a)^2 - sinh(a)^2
-        ex = ex + cosh(2*a)
-    end
-
-    ## sin(a)cos(b) + sin(b)*cos(a) -> sin(a + b)
-    us = filter(u -> u[1], map(pattern_match_prod(:Sin, :Cos), as))
-    vs = filter(u -> u[1], map(pattern_match_prod(:Sin, :Cos), as))
-
-    
-    arg_us = [u[2] for u in us]
-    arg_vs = map(reverse, [u[2] for u in vs])
-    args = intersect(arg_us, arg_vs)
-
-    ## make unique
-    seen = Set()
-    for a in args
-        if !((a in seen) || (reverse(a) in seen))
-            push!(seen, a)            
-        end
-
-    end
-
-    for a in collect(seen)
-        u, v = a
-        ex = ex - sin(u)*cos(v) - sin(v)*cos(u)
-        ex = ex + sin(u + v)
-    end
-
-    ## cos(a)cos(b) - sin(a)*sin(a) -> cos(a - b)
-    us = filter(u -> u[1], map(pattern_match_prod(:Cos, :Cos), as))
-    vs = filter(u -> u[1], map(pattern_match_neg_prod(:Sin, :Sin), as))
-    
-    arg_us = [sort(collect(u[2]), by=SymEngine.toString) for u in us]
-    arg_vs = [sort(collect(u[2]), by=SymEngine.toString) for u in vs]
-    println(us)
-    println(arg_us)
-    println(arg_vs)
-    args = intersect(arg_us, arg_vs)
-    println(args)
-    for a in args
-        u, v = a
-        ex = ex - cos(u)*cos(v) + sin(v)*sin(u)
-        ex = ex + cos(u + v)
-    end
-    
     ex
 
 end

@@ -69,8 +69,15 @@ ex = sin(sin(sin(2x)))
 
 @test trigsimp(2*sinh(exp(x))*cosh(exp(x))) == sinh(2exp(x))
 
-## #ex = sin(x)*cos(y) + sin(y)*cos(x)
-## #println(trigsimp(ex, recurse=false))
+ex = sin(x)*cos(y) + sin(y)*cos(x)
+@test trigsimp(ex) == sin(x + y)
 
-## ex = cos(x)*cos(y) - sin(x)*sin(y)
-## println(trigsimp(ex, recurse=false))
+ex = sin(x)*cos(y) + cos(x)*sin(y)
+@test trigsimp(ex) == sin(x + y)
+
+ex = cos(x)*cos(y) - sin(x)*sin(y)
+@test trigsimp(ex) == cos(x + y)
+
+ex = sin(cos(x) + cos(y))
+@test trigsimp(expand_trig(ex)) == ex
+
