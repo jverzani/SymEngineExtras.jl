@@ -72,11 +72,21 @@ ex = sin(sin(sin(2x)))
 ex = sin(x)*cos(y) + sin(y)*cos(x)
 @test trigsimp(ex) == sin(x + y)
 
+
+ex = sin(x)*cos(y) - sin(y)*cos(x)
+@test trigsimp(ex) == sin(x - y)
+
+
 ex = sin(x)*cos(y) + cos(x)*sin(y)
 @test trigsimp(ex) == sin(x + y)
 
+
 ex = cos(x)*cos(y) - sin(x)*sin(y)
 @test trigsimp(ex) == cos(x + y)
+
+
+ex = cos(x)*cos(y) + sin(x)*sin(y)
+@test trigsimp(ex) == cos(x - y)
 
 ex = sin(cos(x) + cos(y))
 @test trigsimp(expand_trig(ex)) == ex

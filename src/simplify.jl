@@ -1,3 +1,7 @@
+## hack attempts to provide some of SymPy's simplify routines.
+## could be seriously improved
+
+
 ## + expand  (built in)
 ##
 ## + expand_log
@@ -10,7 +14,7 @@
 ## + powsimp
 ## + powdenest
 ## * combsimp
-## * trigsimp
+## + trigsimp
 
 
 ## * factor (over Q)
@@ -25,6 +29,17 @@ export simplify, logsimp, powsimp, powdenest, trigsimp
 export expand_log, expand_power_exp, expand_power_base, expand_trig
 export rewrite_trig
 
+get_fun(ex::BasicType{Val{:Add}}) = :(+)
+get_fun(ex::BasicType{Val{:Sub}}) = :(-)
+get_fun(ex::BasicType{Val{:Mul}}) = :(*)
+get_fun(ex::BasicType{Val{:Div}}) = :(/)
+get_fun(ex::BasicType{Val{:Pow}}) = :(^)
+function get_fun(ex::BasicType)
+    as = get_args(ex)
+    fn = get_symengine_class(ex) |> string |> lowercase |> symbol
+    fn
+end
+
 
 function simplify(ex::Basic)
     ex = logsimp(ex)
@@ -38,7 +53,6 @@ end
 ## logsimp
 ## a * log(b) -> log(b^a)
 ## log(a) + log(b) = log(a*b)
-## was 5 times faster than SymPy logcombine
 function logsimp(ex::Basic; recurse::Bool=true)
     ex1 = Basic(logsimp(BasicType(ex)))
     while recurse && ex1 != ex
@@ -61,15 +75,28 @@ end
         
 
 function logsimp(ex::BasicType{Val{:Add}})
-    as = get_args(ex)
-    n = length(as)
-    ms = PatternMatch[pattern_match(a, log(_1)) for a in as]
-    is = filter(i -> ms[i].match, 1:n)
+    out = pattern_match(ex, log(_1) + log(_2) + ___)
+    if out.match
+        a, b, c = [out.matches[k] for k in (_1, _2, ___)]
+        ex = c + log(a * b)
+    end
 
-    mats = Basic[ms[i].matches[_1] for i in is]
-    nmats = Basic[logsimp(as[j]) for j in setdiff(1:n, is)]
+    out = pattern_match(ex, log(_1) - log(_2) + ___)
+    if out.match
+        a, b, c = [out.matches[k] for k in (_1, _2, ___)]
+        ex = c + log(a / b)
+    end
+    
+    return ex
+    ## as = get_args(ex)
+    ## n = length(as)
+    ## ms = PatternMatch[pattern_match(a, log(_1)) for a in as]
+    ## is = filter(i -> ms[i].match, 1:n)
 
-    log(prod(mats)) + sum(nmats)
+    ## mats = Basic[ms[i].matches[_1] for i in is]
+    ## nmats = Basic[logsimp(as[j]) for j in setdiff(1:n, is)]
+
+    ## log(prod(mats)) + sum(nmats)
 end
 
 function logsimp(ex::BasicType{Val{:Log}})
@@ -373,9 +400,10 @@ function expand_trig(ex::BasicType{Val{:Sin}})
         return sin(a)*cos(b) + sin(b) * cos(a)
     end
 
-    m = pattern_match(ex, sin(2 * _1))
+    m = pattern_match(ex, sin(2 * _1 * ___))
     if m.match
-        a = m.matches[_1]
+        a, c = [get(m.matches, k, Basic(0)) for k in (_1, ___)]
+        a = a * c
         return 2sin(a)*cos(a)
     end
 
@@ -583,14 +611,26 @@ function trigsimp(ex::BasicType{Val{:Add}})
         a, b, c = map(trigsimp, (a,b,c))                
         ex = c + sin(a+b)
     end
-
-
-    ## cos(a)cos(b) - sin(a)*sin(a) -> cos(a - b)
-    out = pattern_match( ex, cos(_1)*cos(_2) - sin(_1)*sin(_2))
+    out = pattern_match( ex, sin(_1)*cos(_2) - sin(_2)*cos(_1) + ___)
     if out.match
         a,b,c = [get(out.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        a, b, c = map(trigsimp, (a,b,c))                        
-        ex = c + cos(a+b)
+        a, b, c = map(trigsimp, (a,b,c))                
+        ex = c + sin(a-b)
+    end
+
+
+    ## cos(a)cos(b) - sin(a)*sin(b) -> cos(a + b)
+    match, out = check_exchangeable_pair(ex, cos(_1)*cos(_2), -sin(_1)*sin(_2))
+    if match
+        ea1, ea2, rest, m1, m2 = out
+        ex = rest + cos(m1 + m2)
+    end
+
+    ## cos(a)cos(b) + sin(a)*sin(b) -> cos(a - b)
+    match, out = check_exchangeable_pair(ex, cos(_1)*cos(_2), sin(_1)*sin(_2))
+    if match
+        ea1, ea2, rest, m1, m2 = out
+        ex = rest + cos(m1 - m2)
     end
     
 
@@ -622,5 +662,47 @@ function trigsimp(ex::BasicType)
         return ex
     else
         eval(Expr(:call, get_fun(ex), map(trigsimp, as)...))
+    end
+end
+
+
+####
+"""
+combsimp handles some gamma relationships
+"""
+function combsimp(ex::Basic; recurse::Bool=true)
+    ex1 = Basic(combsimp(BasicType(ex)))
+    while recurse && ex1 != ex
+        ex = ex1
+        ex1 = Basic(combsimp(BasicType(ex)))
+    end
+    ex1
+end
+
+
+function combsimp(ex::BasicType{Val{:Mul}})
+    ## gamma(1 - z)  gamma(z) ->  pi/sin(pi z_
+    out = pattern_match( ex, gamma(1 - _1) * gamma(_1) * ___)
+    if out.match
+        a,c = [get(out.matches, k, Basic(1)) for k in (_1, ___)]
+        ex = PI / sin(PI*a) * c
+    end
+
+    ## gamma(z) * gamma(z + 1//2)
+    out = pattern_match( ex, gamma(_1) * gamma(_1 + 1//2) * ___)
+    if out.match
+        a,c = [get(out.matches, k, Basic(1)) for k in (_1, ___)]
+        ex = 2^(1 - 2a) * sqrt(PI)  * gamma(2a)
+    end
+
+    ex
+end
+
+function combsimp(ex::BasicType)
+    as = get_args(ex)
+    if length(as) == 0
+        return ex
+    else
+        eval(Expr(:call, get_fun(ex), map(combsimp, as)...))
     end
 end
