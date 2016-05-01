@@ -34,6 +34,12 @@ get_fun(ex::BasicType{Val{:Sub}}) = :(-)
 get_fun(ex::BasicType{Val{:Mul}}) = :(*)
 get_fun(ex::BasicType{Val{:Div}}) = :(/)
 get_fun(ex::BasicType{Val{:Pow}}) = :(^)
+#for t in (:Symbol, :Integer, :Rational, :Complex) ...
+get_fun(ex::BasicType{Val{:Symbol}}) = :identity
+get_fun(ex::BasicType{Val{:Integer}}) = :identity
+get_fun(ex::BasicType{Val{:Rational}}) = :identity
+get_fun(ex::BasicType{Val{:Complex}}) = :identity
+    
 function get_fun(ex::BasicType)
     as = get_args(ex)
     fn = get_symengine_class(ex) |> string |> lowercase |> symbol
@@ -393,159 +399,91 @@ function expand_trig(ex::Basic; recurse::Bool=true)
 end
 
 function expand_trig(ex::BasicType{Val{:Sin}})
-    m = pattern_match(ex, sin(_1 + _2 + ___))
-    if m.match
-        a, b, c =[get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        b = b + c
-        return sin(a)*cos(b) + sin(b) * cos(a)
-    end
-
-    m = pattern_match(ex, sin(2 * _1 * ___))
-    if m.match
-        a, c = [get(m.matches, k, Basic(0)) for k in (_1, ___)]
-        a = a * c
-        return 2sin(a)*cos(a)
-    end
-
-    m = pattern_match(ex, sin(_1 / 2))
-    if m.match
-        a = m.matches[_1]
-        return sqrt((1 - cos(a))/2)
-    end
-
     arg = get_args(ex)[1]
-    return sin(expand_trig(arg))
+    ex = sin(expand_trig(arg))
+
+    pats =  (sin(_1 + __1)  => sin(_1)*cos(__1) + sin(__1) * cos(_1),
+             sin(2 * __1)        =>  2sin(__1)*cos(__1),
+             sin(_1 / 2)         => sqrt((1 - cos(_1))/2)
+             )
     
+    ex = replaceall(Basic(ex), pats...)
+    ex
 end
 
 
 function expand_trig(ex::BasicType{Val{:Cos}})
-    m = pattern_match(ex, cos(_1 + _2 + ___))
-    if m.match
-        a, b = [get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        return cos(a)*cos(b) - sin(a) * sin(b)
-    end
-
-    m = pattern_match(ex, cos(2 * _1))
-    if m.match
-        a = m.matches[_1]
-        return cos(a)^2 - sin(a)^2
-    end
-
-    m = pattern_match(ex, cos(_1 / 2))
-    if m.match
-        a = m.matches[_1]
-        return sqrt((1 + cos(a))/2)
-    end
-
+    
     arg = get_args(ex)[1]
-    return cos(expand_trig(arg))
+    ex = cos(expand_trig(arg))
+
+    pats = (cos(_1 + __1)  =>  cos(_1)*cos(__1) - sin(_1) * sin(__1),
+            cos(2 * __1)        =>  cos(__1)^2 - sin(__1)^2,
+            cos(_1 / 2)         =>  sqrt((1 + cos(_1))/2)
+            )
+
+    ex = replaceall(Basic(ex), pats...)
+    ex
     
 end
 
 
 function expand_trig(ex::BasicType{Val{:Tan}})
-    m = pattern_match(ex, tan(_1 + _2 + ___))
-    if m.match
-        a, b, c = [get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        b = b + c
-        return (tan(a) + tan(b)) / (1 - tan(a) * tan(b))
-    end
-
-    m = pattern_match(ex, tan(2 * _1))
-    if m.match
-        a = m.matches[_1]
-        return  2*tan(a) / (1 - tan(a)^2)
-    end
-
-    m = pattern_match(ex, tan(_1 / 2))
-    if m.match
-        a = m.matches[_1]
-        return sin(a) / (1 + cos(a))
-    end
-
     arg = get_args(ex)[1]    
-    return tan(expand_trig(arg))
+    ex =  tan(expand_trig(arg))
+
+    pats = (tan(_1 +  __1) => (tan(_1) + tan(__1 )) / (1 - tan(_1) * tan(__1)),
+            tan(2 * _1)        => 2*tan(_1) / (1 - tan(_1)^2),
+            tan(_1 / 2)        => sin(_1) / (1 + cos(_1))
+            )
+
+    ex = replaceall(Basic(ex), pats...)
+    ex
+  
     
 end
 
 
 function expand_trig(ex::BasicType{Val{:Sinh}})
-
-    m = pattern_match(ex, sinh(_1 + _2 + ___))
-    if m.match
-        a, b, c =[get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        b = b + c
-        return sinh(a)*cosh(b) + sinh(b) * cosh(a)
-    end
-
-    m = pattern_match(ex, sinh(2 * _1))
-    if m.match
-        a = m.matches[_1]
-        return 2sinh(a)*cosh(a)
-    end
-
-    m = pattern_match(ex, sinh(_1 / 2))
-    if m.match
-        a = m.matches[_1]
-        return sqrt((cosh(a) - 1)/2)
-    end
-
     arg = get_args(ex)[1]
-    return sinh(expand_trig(arg))
+    ex = sinh(expand_trig(arg))
+
+    pats = (sinh(_1 + __1) => sinh(_1)*cosh(__1) + sinh(__1) * cosh(_1),
+            sinh(2 * _1)       => 2 * sinh(_1) * cosh(_1),
+            sinh(_1 / 2)       => sqrt((cosh(_1) - 1)/2)
+            )
+    ex = replaceall(Basic(ex), pats...)
+    ex
+  
 end
 
 # https://en.wikipedia.org/wiki/Hyperbolic_function
 function expand_trig(ex::BasicType{Val{:Cosh}})
-
-    m = pattern_match(ex, cosh(_1 + _2 + ___))
-    if m.match
-        a, b, c =[get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        b = b + c
-        return sinh(a)*cosh(b) + sinh(b) * cosh(a)
-    end
-
-    m = pattern_match(ex, cosh(2 * _1))
-    if m.match
-        a = m.matches[_1]
-        return cosh(a)^2 + sinh(a)^2
-    end
-
-    m = pattern_match(ex, cosh(_1 / 2))
-    if m.match
-        a = m.matches[_1]
-        return sqrt((cosh(a) + 1)/2)
-    end
-
     arg = get_args(ex)[1]
-    return cosh(expand_trig(arg))
+    ex =  cosh(expand_trig(arg))
+
+    pats = (cosh(_1 + __1)  => sinh(_1)*cosh(__1) + sinh(__1 ) * cosh(_1),
+            cosh(2 * _1)         => cosh(_1)^2 + sinh(_1)^2,
+            cosh(_1 / 2)         => sqrt((cosh(_1) + 1) / 2)
+            )
+    ex = replaceall(Basic(ex), pats...)
+    ex
+            
+
 end
    
 
 function expand_trig(ex::BasicType{Val{:Tanh}})
+            
+    arg = get_args(Basic(ex))[1]    
+    ex = tanh(expand_trig(arg))
 
-    m = pattern_match(ex, tanh(_1 + _2 + ___))
-    if m.match
-        a, b, c = [get(m.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        b = b + c
-        return (tanh(a) + tanh(b)) / (1 + tanh(a) * tanh(b))
-    end
-
-    m = pattern_match(ex, tanh(2 * _1))
-    if m.match
-        a = m.matches[_1]
-        return  2*tanh(a) / (1 + tanh(a)^2)
-    end
-
-    m = pattern_match(ex, tanh(_1 / 2))
-    if m.match
-        a = m.matches[_1]
-        return (exp(x) - 1) / (exp(x) + 1)
-    end
-
-    arg = get_args(ex)[1]    
-    return tan(expand_trig(arg))
-    
+    pats = (tanh(_1  + __1) => (tanh(_1) + tanh( __1)) / (1 + tanh(_1) * tanh( __1)),
+            __1 * tanh(2*_1)    => __1 * 2 * tanh(_1) / (1 + tanh(_1)^2),
+            __1 * tanh(_1 / 2)  => __1 * (exp(_1) - 1) / (exp(_1) + 1)
+            )
+    ex = replaceall(Basic(ex), pats...)
+    ex 
 end
 
 function expand_trig(ex::BasicType)
@@ -580,72 +518,39 @@ end
 
 
 function trigsimp(ex::BasicType{Val{:Mul}})
-    ## sin(x) cos(x) -> sin(2x)/2
-    out = pattern_match(ex, ___*sin(_1)*cos(_1))
-    if out.match
-        a, c = [get(out.matches, k, Basic(0)) for k in (_1,  ___)]
-        a, c = map(trigsimp, (a,c))
-        ex = c * sin(2a) / 2
-    end
 
-    ##
-    ## sinh(x) cosh(x) -> sinh(2x)/2
-    out = pattern_match(ex, ___*sinh(_1)*cosh(_1))
-    if out.match
-        a,c =  [get(out.matches, k, Basic(1)) for k in (_1,  ___)]
-        a, c = map(trigsimp, (a,c))        
-        ex = c * sinh(2a)/2
-    end
+    pats = (__3 * sin(_1) * cos(_1)   => __3 * sin(2 * _1)/2,
+            __3 * sinh(_1) * cosh(_1) => __3 * sinh(2 * _1)/2
+            )
 
-    ## others?
+    ex = replaceall(Basic(ex), pats...)
+    
     ex
 end
 
 
 
 function trigsimp(ex::BasicType{Val{:Add}})
-    ## sin(a)cos(b) + sin(b)*cos(a) -> sin(a + b)
-    out = pattern_match( ex, sin(_1)*cos(_2) + sin(_2)*cos(_1) + ___)
-    if out.match
-        a,b,c = [get(out.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        a, b, c = map(trigsimp, (a,b,c))                
-        ex = c + sin(a+b)
-    end
-    out = pattern_match( ex, sin(_1)*cos(_2) - sin(_2)*cos(_1) + ___)
-    if out.match
-        a,b,c = [get(out.matches, k, Basic(0)) for k in (_1, _2, ___)]
-        a, b, c = map(trigsimp, (a,b,c))                
-        ex = c + sin(a-b)
-    end
+    pats = (sin(_1)*cos(_2) + sin(_2)*cos(_1) => sin(_1 + _2),
+            sin(_1)*cos(_2) - sin(_2)*cos(_1) => sin(_1 - _2),
+            cos(_1)^2 - sin(_1)^2             => cos(2 * _1),
+            -cos(_1)^2 + sin(_1)^2            => -cos(2 * _1))
 
-
+    ex = replaceall(Basic(ex), pats...)
+            
+            
     ## cos(a)cos(b) - sin(a)*sin(b) -> cos(a + b)
-    match, out = check_exchangeable_pair(ex, cos(_1)*cos(_2), -sin(_1)*sin(_2))
+    match, out = _check_exchangeable_pair(ex, cos(_1)*cos(_2), -sin(_1)*sin(_2))
     if match
         ea1, ea2, rest, m1, m2 = out
         ex = rest + cos(m1 + m2)
     end
 
     ## cos(a)cos(b) + sin(a)*sin(b) -> cos(a - b)
-    match, out = check_exchangeable_pair(ex, cos(_1)*cos(_2), sin(_1)*sin(_2))
+    match, out = _check_exchangeable_pair(ex, cos(_1)*cos(_2), sin(_1)*sin(_2))
     if match
         ea1, ea2, rest, m1, m2 = out
         ex = rest + cos(m1 - m2)
-    end
-    
-
-    ## cos(x)^2 - sin(x)^2  -> cos(2x)
-    out = pattern_match( ex, cos(_1)^2 - sin(_1)^2 + ___)
-    if out.match
-        a,c = [get(out.matches, k, Basic(0)) for k in (_1,  ___)]
-        ex = c + cos(2a)
-    end
-
-    ## -cos(x)^2 + sin(x)^2  -> -cos(2x)
-    out = pattern_match( ex, -cos(_1)^2 + sin(_1)^2 + ___)
-    if out.match
-        a,c = [get(out.matches, k, Basic(0)) for k in (_1,  ___)]
-        ex = c - cos(2a)
     end
 
     ex

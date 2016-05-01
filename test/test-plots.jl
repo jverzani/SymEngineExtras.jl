@@ -33,7 +33,7 @@ info("vectorplot")
 vectorfieldplot([cos(x), sin(y)], (x,0,2pi), (y,0,2pi))
 
 info("contour plot")
-plot(linspace(-5,5,25), linspace(-5,5,25), x^2 - y^2)
+contour(linspace(-5,5,25), linspace(-5,5,25), x^2 - y^2)
 contourplot(x^2 - y^2, (x,-5, 5), (y,-5, 5))
 
 info("surface")

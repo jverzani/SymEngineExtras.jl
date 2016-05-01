@@ -4,3 +4,7 @@
 
 
 Some experimental extras for [SymEngine.jl](https://github.com/symengine/SymEngine.jl).
+
+* Plotting
+* simplifying (`pattern_match` and `simplify` are naive attempts)
+* ...
