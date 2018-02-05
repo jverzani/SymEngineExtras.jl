@@ -1,5 +1,31 @@
 using Iterators
 
+## Mull over
+## variables of the form _x and x_
+## the latter can beused to make replacement reach replace(sin(2x), sin(x_) => -cos(x)) would  match x_ with 2x and return -cos(2x). The point being x_ would use x as key
+## this would not work in sympy, as we need to identify x_ with x and the only way I can think of would be: Basic(Symbolx(string(x)[1:end-1]))
+## normalize(x) (endswith(string(x), "_") ? Basic(...) : x
+
+
+## slurpvar -> variadic match: match 0,1,... terms in a sum or product
+
+## TODO
+## alloctions tuples, not dictionary?
+## pass along dictionary?
+## variadic
+## tighten up
+## rename get_symengine_class -> head
+## get_arg -> args
+## put in module
+## export variables?
+
+
+
+
+## Fix
+#d = match(_1^_2*__1, x^y*1) # __1 => 1 should match
+
+
 ## need to check __ and ___ consoliate?
 
 
@@ -14,179 +40,293 @@ prod_sum(ex::BasicType{Val{:Mul}}) = prod
 prod_sum(ex::BasicType{Val{:Add}}) = sum
 prod_sum(ex::Basic) = prod_sum(BasicType(ex))
 
-export __, _1, _2, _3, _4, _5, _6, _7, _8
-export ___, __1, __2, __3, __4, __5, __6, __7, __8
+# zero or one
+unit_value(ex::BasicType{Val{:Mul}}) = Basic(1)
+unit_value(ex::BasicType{Val{:Add}}) = Basic(0)
+unit_value(ex::Basic) = unit_value(BasicType(ex))
 
 
 
-const __ = symbols("__")
-const _1, _2, _3, _4, _5, _6, _7, _8 = _vars = symbols("_1 _2 _3 _4 _5 _6 _7 _8")
-const ___, __1, __2, __3, __4, __5, __6, __7, __8 = __slurpvars = symbols("___ __1 __2 __3 __4 __5 __6 __7 __8")
-const _allvars = (__, ___, _vars..., __slurpvars...)
+## We use "_var" for a place holder
+## We use "__var" for a "slurper"
+
+## TODO: add `phs` for pass in placeholders
+const DEFAULT_PHS = Any[Set{Basic}()]
+
+set_default_placeholders(set) = (DEFAULT_PHS[1] = set)
+
+isplaceholder(x, phs=DEFAULT_PHS[1]) = startswith(string(x), "_") || endswith(string(x), "_") || in(x, phs)
+isdontcare(x) = string(x) == "_ϕ"
+isslurpvar(x) = startswith(string(x), "__") || endswith(string(x), "__")
+isdontcareslurp(x) = string(x) == "__ϕ"
 
 
 
-type PatternMatch
+
+
+mutable struct PatternMatch{K,V}
     match::Bool
-    matches::Dict
+    matches::Dict{K,V}
 end
+PatternMatch(m::Bool) = PatternMatch(m, Dict{Basic, Basic}())
+
+Base.ismatch(p::PatternMatch) = p.match
+matches(p::PatternMatch) = p.matches
+export matches
 
 function Base.show(io::IO, p::PatternMatch)
-    println(io, "Pattern matches: ", p.match)
-    p.match && println(io, p.matches)
+    println(io, "Pattern matches: ", ismatch(p))
+    if ismatch(p)
+        for (k,v) in matches(p)
+            println(io, "  ", k, " => ", v)
+        end
+    end
 end
 
-Base.(:&)(p::PatternMatch, q::PatternMatch) = p.match & q.match
-Base.(:|)(p::PatternMatch, q::PatternMatch) = p.match | q.match
+Base.:&(p::PatternMatch, q::PatternMatch) = ismatch(p) & ismatch(q)
+Base.:|(p::PatternMatch, q::PatternMatch) = ismatch(p) | ismatch(q)
+
 ## true if match==match and _x vars are equal 
-function Base.(:(==))(p::PatternMatch, q::PatternMatch)
-    p.match == q.match     || return false
-    p.match                || return true # both false
+function Base.:(==)(p::PatternMatch, q::PatternMatch)
+    ismatch(p) == ismatch(q)     || return false
+    ismatch(p)                || return true # both false
+
     ## compare dicts
-    pks = setdiff(collect(keys(p.matches)), __)
-    qks = setdiff(collect(keys(q.matches)), __)
+    #    pks = setdiff(collect(keys(matches(p))), __)
+    #    qks = setdiff(collect(keys(matches(q))), __)
+    pks = filter(!isslurpvar, collect(keys(matches(p))))
+    qks = filter(!isslurpvar, collect(keys(matches(q))))
+    
+    
     length(pks) == length(qks) || return false
     for k in pks
-        p.matches[k] == q.matches[k] || return false
+        matches(p)[k] == matches(q)[k] || return false
     end
     true
 end
 
+# Are (k,v) in q all in p?
+function Base.issubset(q::PatternMatch, p::PatternMatch)
+    (!ismatch(p) || !ismatch(q)) && return false
+    for (k, v) in matches(q)
+        isdontcare(k) || isdontcareslurp(k) && continue
+        if haskey(matches(p), k)
+            matches(p)[k] == v || return false
+        end
+    end
+    true
+end
+
+## do dictionaries p q match where they have common keys
+function isconsistent(p::Dict, q::Dict)
+    common_keys = intersect(keys(p), keys(q))
+    for k in common_keys
+        p[k] == q[k] || return false
+    end
+    return true
+end
+isconsistent(p::PatternMatch, q::PatternMatch) = (ismatch(p)==ismatch(q) && isconsistent(matches(p), matches(q)))
 ## does q agree with p where commonly defined? If so, return true *and* mutate p
 ## agree discounts __ value 
 function agree!(p::PatternMatch, q::PatternMatch)
-    (!p.match || !q.match) && return false
-    
-    for k in keys(q.matches)
-        k == __ || k == ___ && continue
-        if haskey(p.matches, k)
-            p.matches[k] == q.matches[k] || return false
-        end
-    end
-    for k in keys(q.matches)
-        k == __ && continue
-        if k in __slurpvars
-            if haskey(p.matches,k) push!(p.matches[k], q.matches[k]) else p.matches[k] = q.matches[k] end
+    (!ismatch(p) || !ismatch(q)) && return false
+
+    # check values in q match values in p or return false
+    #!issubset(q, p) && return false
+    !isconsistent(q, p) && return false
+
+    # now update values in p for keys in q but not p
+    for (k,v) in matches(q)
+        isdontcare(k) && continue
+        if isslurpvar(k)
+            if haskey(matches(p),k)
+                push!(p.matches[k], v)
+            else
+                p.matches[k] = v
+            end
             continue
         end
-        p.matches[k] = q.matches[k]
+        p.matches[k] = v
     end
+
     return true
 end
 
 ## what to pass down to matches!!
-function pattern_match(ex::Basic, pat::Basic)
+function pattern_match(ex::Basic, pat::Basic, phs=DEFAULT_PHS[1])
     p_op = get_symengine_class(pat)
     ## symbols are special
     if p_op == :Symbol
-        pat in _allvars && return PatternMatch(true, Dict(pat=>ex))
-        ex == pat && return PatternMatch(true, Dict())
-        return PatternMatch(false, Dict())
+        #pat in _allvars && return PatternMatch(true, Dict(pat=>ex))
+        isplaceholder(pat, phs) && return PatternMatch(true, Dict(pat=>ex))        
+        ex == pat && return PatternMatch(true)
+        return PatternMatch(false)
     end
-    
-    pattern_match(BasicType(ex), pat)
+
+    pattern_match(BasicType(ex), pat, phs)
 end
 
 
-function pattern_match(ex::Union{BasicType{Val{:Mul}}, BasicType{Val{:Add}}}, pat)
+function pattern_match(ex::Union{BasicType{Val{:Mul}}, BasicType{Val{:Add}}}, pat, phs=DEFAULT_PHS[1])
     ## what to do
     op = get_symengine_class(Basic(ex))
     p_op = get_symengine_class(pat)
 
-    op != p_op && return PatternMatch(false, Dict())
+    op != p_op && return PatternMatch(false)
 
     eas, pas = get_args(Basic(ex)), get_args(pat)      
     sort!(eas, by=SymEngine.toString)
     
     slurp = false
-    slurpingwith = collect(filter(var -> var in pas, __slurpvars))
+    slurpingwith = filter(isslurpvar, pas) #collect(filter(var -> var in pas, __slurpvars))
     length(slurpingwith) > 1 && return throw(ArgumentError("Too many slurping variables"))
     if length(slurpingwith) == 1
         slurp = true
-        pas = setdiff(pas, __slurpvars)
+        pas = setdiff(pas, slurpingwith)
+        slurpvar = slurpingwith[1]
     end
+    
 
-    slurp || length(eas) == length(pas) || return PatternMatch(false, Dict())
+    (length(eas) < length(pas)) || slurp || length(eas) == length(pas) || return PatternMatch(false)
 
     
-    ## we check M x N
-    d = Dict()
-    for p in pas
-        d[p] = cases(eas, p)
-    end
 
     ## need to ensure we don't consider cases where we match same thing!
-    c = tuple()
-    for case in product([d[k] for k in keys(d)]...)
-        out = case[1][1]
-        a = true
-        s = Set(case[1][2])
-        for c in case[2:end]
-            u, i = c
-            if i in s
-                a = false
+    d = Dict{Basic, Basic}()
+    matched_terms = Basic[]
+    
+    for p in pas
+        found_match=false
+        for expr in eas
+            expr in matched_terms && continue
+            pm = match(p, expr)
+            if ismatch(pm)
+
+                push!(matched_terms, expr)
+                isconsistent(d, matches(pm)) || return PatternMatch(false)
+                merge!(d, matches(pm))
+                found_match=true
                 break
             end
-            push!(s, i)
-            
-            a = agree!(out, u)
-            a || continue
         end
-        if a
-            ## if slurp, well we slurp up other variables
-            if slurp
-                is = [c[2] for c in case]
-                is = setdiff(1:length(eas), is)
-                out.matches[slurpingwith[1]] = prod_sum(ex)(eas[is])
-            end
-            return out
-            break
+        !found_match && return PatternMatch(false)
+    end
+
+    # handle slurping variables!
+    if slurp
+        not_matched = setdiff(eas, matched_terms)
+        if length(not_matched) > 0
+            d[slurpvar] = prod_sum(ex)(not_matched) 
+        else
+            d[slurpvar] = unit_value(ex)
         end
     end
 
-    return PatternMatch(false, Dict())
+    return PatternMatch(true,d)
+
+    # ## we check M x N
+    # d = Dict()
+    # for p in pas
+    #     d[p] = cases(eas, p, phs)
+    # end
+    
+    # c = tuple()
+    # for case in product([d[k] for k in keys(d)]...)
+    #     out = case[1][1]
+    #     a = true
+    #     s = Set(case[1][2])
+    #     for c in case[2:end]
+    #         u, i = c
+    #         if i in s
+    #             a = false
+    #             break
+    #         end
+    #         push!(s, i)
+            
+    #         a = agree!(out, u)
+    #         a || continue
+    #     end
+    #     if a
+    #         ## if slurp, well we slurp up other variables
+    #         if slurp
+    #             is = [c[2] for c in case]
+    #             is = setdiff(1:length(eas), is)
+    #             out.matches[slurpingwith[1]] = prod_sum(ex)(eas[is])
+    #         end
+    #         return out
+    #         break
+    #     end
+    # end
+
+    return PatternMatch(false)
     
 end
 
-function pattern_match(ex::SymEngine.BasicType, pat)
+function pattern_match(ex::SymEngine.BasicType, pat, phs=DEFAULT_PHS[1])
     ex = Basic(ex)
     op = get_symengine_class(ex)
     p_op = get_symengine_class(pat)
 
     if p_op in [:Integer, :Rational, :Complex]
-        ex != pat && return PatternMatch(false, Dict())
-        return PatternMatch(true, Dict())
+        ex != pat && return PatternMatch(false)
+        return PatternMatch(true)
     end
 
     if p_op == :Symbol
-        if pat in _allvars
-            out = PatternMatch(true, Dict())
+        #        if pat in _allvars
+        if isplaceholder(pat, phs)
+            out = PatternMatch(true)
+
+            
             agree!(out, PatternMatch(true, Dict(pat => ex)))
             return out
         else
-            return PatternMatch(ex == pat,  Dict())
+            return PatternMatch(ex == pat)
         end
     end
 
     ## recurse through arguments
-    op !== p_op && return PatternMatch(false, Dict())
     eas, pas = get_args(ex), get_args(pat)
+    
+    ## Special case
+    ## Handle slurpvars so that x ~ _1 + __1 will yield (_1 => x, __1 => 0)
+    ## and x ~ _1 * __1 will yield (_1 => x, __1 => 1)
+    ## even though expressions don't match at the op level. 
+    if p_op in [:Mul, :Add]
+        slurpvars = filter(isslurpvar, pas)
+        if length(slurpvars) > 0 && length(pas) - length(slurpvars) == 1
+            pm = pattern_match(ex, setdiff(pas, slurpvars)[1])
+            agree!(pm, PatternMatch(true, Dict(slurpvar=> p_op==:Mul ? Basic(1) : Basic(0) for slurpvar in slurpvars)))
+            return pm
+        end
+    end
+
+    if p_op in [:Pow] && isslurpvar(pas[2]) && op != :Pow
+        pm = pattern_match(ex, pas[1])
+        agree!(pm, PatternMatch(true, Dict(pas[2] => 1)))
+        return pm
+    end
+                                
+
+    
+    op !== p_op && return PatternMatch(false)
 
     if op in [:Add, :Mul]
         sort!(eas, by=SymEngine.toString) ## makes some things work... (_1*_2 + _1*_3 depends on sort order when matching)
     end
 
-    length(eas) < length(pas) && return PatternMatch(false, Dict())
+    length(eas) < length(pas) && return PatternMatch(false)
 
     ## need to consider different orders
 
-    out = PatternMatch(true, Dict())
+    out = PatternMatch(true)
     for (e,p) in zip(eas, pas)
-#        println(e, " ~ ", p)
-        if !agree!(out, pattern_match(e, p))
-            return PatternMatch(false, Dict())
+
+        if !agree!(out, pattern_match(e, p, phs))
+            return PatternMatch(false)
         end
     end
+    
     return out
 end
 
@@ -194,15 +334,15 @@ end
 ## there is no guarantee what term gets labeled sin(_1)*sin(_2) so comparing _2 across pieces
 ## of the pattern is not good.
 ## this handles this case, though should be generalized. However, note that there is n! checking (n=subpatterns)
-function _check_exchangeable_pair(ex, pat1, pat2)
+function _check_exchangeable_pair(ex, pat1, pat2, phs=DEFAULT_PHS[1])
     
     eas = SymEngine.get_args(Basic(ex))
     op = SymEngine.get_symengine_class(Basic(ex))
     
     n = length(eas)
     
-    c1 = cases(eas, pat1)
-    c2 = cases(eas, pat2)
+    c1 = cases(eas, pat1, phs)
+    c2 = cases(eas, pat2, phs)
 
     for case in product(c1, c2)
         pma, i = case[1]
@@ -232,7 +372,7 @@ end
 
 """
 
-   `match(pattern, expression)`: return `PatternMatch` object
+   `match(pattern, expression, phs=DEFAULT_PHS[1])`: return `PatternMatch` object
 
 
 Pattern matching.
@@ -249,14 +389,32 @@ argument `x^2` which in turn is the power operation with arguments
 `1` is a leaf, `x` -- a symbol -- is also leaf of the tree, but `x^2`
 can be written as the power function with two argumentx `x` and `2`.
 
+In a picture, we might see
+
+```
+    sin
+     |
+    pow 
+    /  \     
+   sum   2
+  /  | \ 
+ pow x  1
+ / \
+x   2
+```
+
+
 An expression will match a pattern if the two expression trees are
 identical, unless the pattern has a wildcard. For most operations, a
 wild card simply matches any subtree. Wildcards have fixed names `_1`,
-`_2`, .... So the pattern `sin(_1)` will match `sin((x^2 + 2 + 1)^2)`
-as the function heads match and the wild card stops the matches at the
-arguments. The pattern `sin((x^2 + x + 1)^_1)` will also match, as the
-`_1` will match the exponent `2`. Similarly, `sin(_1^2)` will match, with `_1`
-matching `x^2 + x + 1`. However, `sin(_1^3)` will not match -- the `3`
+`_2`, ....
+
+So the pattern `sin(_1)` will match `sin((x^2 + 2 + 1)^2)`
+as the function heads match and the `_1` matches the subtree starting from `pow`.
+Similarly, `sin(_1^2)` will match, with `_1`
+matching `x^2 + x + 1`,  the power function matches the exponent
+matches and the wild card  matches the subtree from `sum`. The pattern `sin((x^2 + x + 1)^_1)` will also match, as the `_1` will
+match the exponent `2`. However, `sin(_1^3)` will not match -- the `3`
 does not match the `2`.
 
 The term `x^2 + x + 1` can be matched by `_1`. But will it match `x^2
@@ -291,7 +449,7 @@ match(sin(_1), sin(cos(x))) # true with _1 => cos(x)
 ```
 
 """
-Base.match(pat::Basic, ex::Basic) = pattern_match(ex, pat)
+Base.match(pat::Basic, ex::Basic, phs=DEFAULT_PHS[1]) = pattern_match(ex, pat, phs)
 
 
 
@@ -306,11 +464,11 @@ ismatch(x^2, sin(x))  # false
 ismatch(x^2, sin(x^2*cos(x)))  # true, will match the `x^2` in the argument.
 
 """
-function Base.ismatch(pat, ex)
-    pattern_match(ex, pat).match && return true
+function Base.ismatch(pat, ex, phs=DEFAULT_PHS[1])
+    pattern_match(ex, pat, phs).match && return true
 
     exs = SymEngine.get_args(ex)
-    any([ismatch(pat, ex) for ex in exs]) && return true
+    any([ismatch(pat, ex, phs) for ex in exs]) && return true
 
     return false
 end
@@ -319,22 +477,24 @@ end
 
 """
 
-    `cases(expessions, pattern)` return patternmatches for matches expression and indices of matched expressions
+    cases(expessions, pattern)
 
-Examples
+Return patternmatches for matches expression and indices of matched expressions
+
+Examples:
+    
 ```
 pms, inds = cases([x, x^2, x^3], x^_1) # inds = [2,3], pms = [pattern_match(x^2, x^_1), pattern_match(x^3, x^_1)]
 ```
 
-Kinda like filter to extract matching expressions, but also return index
- return filtered matches, index relative to original expressions
+Kinda like filter to extract matching expressions, but also returns index relative to original expressions
 """
-function cases(exs::Vector, pat)
+function cases(exs::Vector, pat, phs=DEFAULT_PHS[1])
     ## return cases and their indices
     es = PatternMatch[]
     ind = Int[]
     for i in 1:length(exs)
-        a = pattern_match(exs[i], pat) 
+        a = pattern_match(exs[i], pat, phs) 
         if a.match
             push!(es, a)
             push!(ind, i)
@@ -361,7 +521,7 @@ find(a*sin(x) + a*sin(y) + b*sin(x) + b*sin(y), sin(_1))  # {sin(x), sin(y)}, ma
 function Base.find(ex::Basic, pat, s = Set())
     match(pat, ex).match && push!(s, ex)
 
-    exs = SymEngine.get_args(ex)
+    exs = get_args(ex)
     for ex in exs
         find(ex, pat, s)
     end
@@ -434,3 +594,16 @@ function replaceall(ex::BasicType, ps::Pair...)
 
     ex
 end
+
+
+##
+## replace
+## rewrite(sin(x)*cos(y), sin(_1)*cos(_2)*__1,(sin(_1+_2) + cos(_1-_2))*__1)
+function rewrite(ex, pat, rpat)
+    p = match(pat, ex)
+
+    !ismatch(p) && return ex
+    subs(rpat, matches(p)...)
+end
+        
+    
