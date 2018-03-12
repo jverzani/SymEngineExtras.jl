@@ -23,11 +23,10 @@
 ## * cancel
 ## * apart
 
-## * rewrite
+### --------------------------------------------------
 
-export simplify, logsimp, powsimp, powdenest, trigsimp
-export expand_log, expand_power_exp, expand_power_base, expand_trig
-export rewrite_trig
+export trig_simp, expand_trig
+
 
 get_fun(ex::BasicType{Val{:Add}}) = :(+)
 get_fun(ex::BasicType{Val{:Sub}}) = :(-)
@@ -40,574 +39,206 @@ get_fun(ex::BasicType{Val{:Integer}}) = :identity
 get_fun(ex::BasicType{Val{:Rational}}) = :identity
 get_fun(ex::BasicType{Val{:Complex}}) = :identity
     
-function get_fun(ex::BasicType)
-    as = get_args(ex)
-    fn = get_symengine_class(ex) |> string |> lowercase |> symbol
+function get_fun(u::BasicType)
+    ex = Basic(u)
+    as = args(ex)
+    fn = head(ex) |> string |> lowercase |> Symbol
     fn
 end
 
+abstract type AbstractSimplify end
 
-function simplify(ex::Basic)
-    ex = logsimp(ex)
-    ex = powsimp(ex)
-    ex = powdenest(ex)
-    ex = trigsimp(ex)
+## identities
+
+
+
+## rewrite product of sin and cos
+
+## sin(x)*cos(y) = 1/2 * (sin(x+y) + sin(x-y)) ...
+function sc(ex)
+    @vars u_ v_ x___
+    out = replace(ex,
+                  sin(u_)*cos(v_)*x___,
+                  (isempty(x___)?Basic(1):prod(x___)) * (sin(expand(v_ + u_)) + sin(expand(u_ - v_))))
+    expand(out)
+end
+
+function ss(ex)
+    @vars u_ v_ x___
+    out = replace(ex,
+                  sin(u_)*sin(v_)*x___,
+                  x___*(1//2)*(cos(expand(u_ - v_)) - cos(expand(u_ + v_))))
+    expand(out)
+end
+
+function cc(ex)
+    @vars u_ v_ x___
+    out = replace(ex,
+                  cos(u_)*cos(v_)*x___,
+                  x___ * (1//2)*(cos(expand(u_ + v_)) + cos(expand(u_ - v_))))
+    expand(out)
+end
+
+## hyperbolic
+function shch(ex)
+    @vars u_ v_ x___
+    out = replace(ex,
+                  sinh(u_)*cosh(v_)*x___,
+                  x___*(1//2)*(sinh(expand(v_ + u_)) + sinh(expand(u_ - v_))))
+    expand(out)
+end
+
+function shsh(ex)
+    @vars u_ v_ x___
+    out = replace(ex,
+                  sinh(u_)*sinh(v_)*x___,
+                  x___*(1//2)*(cosh(expand(u_ + v_))- cosh(expand(u_ - v_)) ))
+    expand(out)
+end
+
+function chch(ex)
+    @vars u_ v_ x___
+    out = replace(ex,
+                  cosh(u_)*cosh(v_)*x___,
+                  x___ * (1//2)*(cosh(expand(u_ + v_)) + cosh(expand(u_ - v_))))
+    expand(out)
+end
+
+
+### expand trig -- sin(x+y) -> sin(x)*sin(y) + cos(x)*cos(y)
+function sxy(ex)
+    @vars x_ y_ x___ 
+    ex = replace(ex, sin(x_ + y_) * x___ => x___ * (sin(x_)*cos(y_) + sin(y_) * cos(x_)))
+#    m = match(ex, sin(x_*y_))
+#    !ismatch(m) && return ex
+    #    is XX Number(x_) or Number(y_) and integer and agreater 2 then write as 2x + (n-2)x and expand#...
     ex
 end
 
+function cxy(ex)
+    @vars x_ y_ x___ 
+    replace(ex, cos(x_ + y_) * x___ => x___ * (cos(x_)*cos(y_) - sin(x_) * sin(y_)))
+end
 
-## logsimp
-## a * log(b) -> log(b^a)
-## log(a) + log(b) = log(a*b)
-function logsimp(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(logsimp(BasicType(ex)))
-    while recurse && ex1 != ex
+##################################################
+
+##
+## The basic _simp functions walk the syntax tree
+## the specialized types then define what happens
+## when the walking occurs with overrides as needed
+function _simp(T::AbstractSimplify, ex::BasicType{Val{:Add}})
+    sum(_simp(T, a) for a in args(Basic(ex)))
+end
+
+function _simp(T::AbstractSimplify, ex::BasicType{Val{:Mul}})
+    prod(_simp(T, a) for a in args(Basic(ex)))
+end
+
+## "canonicalize" trig, hyperbolic, to use sin,cos or sinh, cosh
+## Could make this a separate simplification, but that would
+## involve walking the syntax tree again
+_simp(::AbstractSimplify, ex::BasicType{Val{:Tan}}) = (u = args(Basic(ex));sin(u...)/cos(u...))
+_simp(::AbstractSimplify, ex::BasicType{Val{:Cot}}) = (u = args(Basic(ex));cos(u...)/sin(u...))
+_simp(::AbstractSimplify, ex::BasicType{Val{:Sec}}) = (u = args(Basic(ex));inv(cos(u...)))
+_simp(::AbstractSimplify, ex::BasicType{Val{:Csc}}) = (u = args(Basic(ex));inv(sin(u...)))
+
+_simp(::AbstractSimplify, ex::BasicType{Val{:Tanh}}) = (u = args(Basic(ex));sinh(u...)/cosh(u...))
+_simp(::AbstractSimplify, ex::BasicType{Val{:Coth}}) = (u = args(Basic(ex));cosh(u...)/sinh(u...))
+_simp(::AbstractSimplify, ex::BasicType{Val{:Sech}}) = (u = args(Basic(ex));inv(cosh(u...)))
+_simp(::AbstractSimplify, ex::BasicType{Val{:Csch}}) = (u = args(Basic(ex));inv(sinh(u...)))
+
+## leaves -- when args(ex) = []
+function _simp(::AbstractSimplify, ex::T) where {T <: SymEngine.BasicNumber}
+    Basic(ex)
+end
+
+function _simp(::AbstractSimplify, ex::BasicType{Val{:Symbol}})
+    Basic(ex)
+end
+
+## catch all
+function _simp(T::AbstractSimplify, ex::BasicType)
+#    println("_simp: $ex $(typeof(ex))")
+    eval(Expr(:call, get_fun(ex), broadcast(_simp, T, args(Basic(ex)))...))
+end
+_simp(T::AbstractSimplify, ex::Basic) = _simp(T, BasicType(ex))
+
+
+## iterate until a fixed point
+function _fixed_point(T::AbstractSimplify, ex, n=20)
+    for i in 1:n
+        ex1 = _simp(T, BasicType(ex))
+        ex1 == ex && return expand(ex)
         ex = ex1
-        ex1 = Basic(logsimp(BasicType(ex)))
     end
-    ex1
+    expand(ex)
 end
 
-function logsimp(ex::BasicType{Val{:Mul}})
 
-    ## a log(b) -> log(b^a)
-    m = pattern_match(ex, _1 * log(_2))
-    if m.match
-        a, b = [get(m.matches, k, Basic(1)) for k in (_1, _2)]
-        return log(b^a)
-    end
-    prod(map(logsimp, get_args(ex)))
-end
-        
 
-function logsimp(ex::BasicType{Val{:Add}})
-    out = pattern_match(ex, log(_1) + log(_2) + ___)
-    if out.match
-        a, b, c = [out.matches[k] for k in (_1, _2, ___)]
-        ex = c + log(a * b)
-    end
+##################################################
 
-    out = pattern_match(ex, log(_1) - log(_2) + ___)
-    if out.match
-        a, b, c = [out.matches[k] for k in (_1, _2, ___)]
-        ex = c + log(a / b)
+## check that walking works
+struct BlankSimp <: AbstractSimplify end
+
+##################################################
+## TrigSimp
+struct TrigSimp <: AbstractSimplify end
+
+"""
+    trig_simp
+
+Expand trig products such as `sin(x)*cos(y)` into sums using double angle
+formulas
+"""
+trig_simp(ex::Basic) = _fixed_point(TrigSimp(), ex)
+
+function _simp(T::TrigSimp, ex::BasicType{Val{:Pow}})
+    a,b = args(Basic(ex))
+    if  head(b) == :Integer && b > 1
+        @vars u_
+        op = head(a)
+        op == :Sin  && return replace(a^2, sin(u_)^2,   1//2*(1 - cos(2*u_)))  * a^(b-2)
+        op == :Cos  && return replace(a^2, cos(u_)^2,   1//2*(1 + cos(2*u_)))  * a^(b-2)        
+        op == :Sinh && return replace(a^2, sinh(u_)^2, -1//2*(1 - cosh(2*u_))) * a^(b-2)
+        op == :Cosh && return replace(a^2, cosh(u_)^2,  1//2*(1 + cosh(2*u_))) * a^(b-2)
+    elseif head(b) == :Integer && b <= -1
+        return _simp(T, a)^b
     end
-    
     return ex
-    ## as = get_args(ex)
-    ## n = length(as)
-    ## ms = PatternMatch[pattern_match(a, log(_1)) for a in as]
-    ## is = filter(i -> ms[i].match, 1:n)
-
-    ## mats = Basic[ms[i].matches[_1] for i in is]
-    ## nmats = Basic[logsimp(as[j]) for j in setdiff(1:n, is)]
-
-    ## log(prod(mats)) + sum(nmats)
 end
 
-function logsimp(ex::BasicType{Val{:Log}})
-    log(logsimp(get_args(ex)[1]))
-end
 
-function logsimp(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(logsimp, as)...))
+## products apply the simplification rules for sin*cos,...
+function _simp(T::TrigSimp, ex::BasicType{Val{:Mul}})
+    v = Basic(ex)
+    u = v |> cc |> ss |> sc |> chch |> shsh |> shch
+    u = expand(u)
+    head(u) != :Mul && return u
+    out = Basic(1)
+
+    ## out =prod(_simp(T, a) for a in args(Basic(u)))
+    for a in args(Basic(u))
+        out = out * _simp(T, a)
     end
+    return out
 end
 
+##################################################
+## expand trig
+struct ExpandTrig <: AbstractSimplify end
 
-## expand_log
-## a * log(b) -> log(b^a)
-## log(a) + log(b) = log(a*b)
-function expand_log(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(expand_log(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(expand_log(BasicType(ex)))
-    end
-
-    ex1
-end
-
-function expand_log(ex::BasicType{Val{:Log}})
-    arg = get_args(ex)[1]
-    ty = get_symengine_class(arg)
-
-    ## we expand Mul, Div and Pow
-    if ty == :Mul
-        mas = get_args(arg)
-        return sum([log(expand_log(m)) for m in mas])
-    elseif ty == :Div
-        mas = get_args(arg)
-        return log(expand_log(mas[1])) - log(expand_log(mas[2]))
-    elseif ty == :Pow
-        mas = get_args(arg)
-        return expand_log(mas[2]) * log(mas[1])
-    else
-        log(expand_log(arg))
-    end
-end
-        
-
-
-function expand_log(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(expand_log, as)...))
-    end
-end
-
-
-
-
-## powsimp
-
-
-## powsimp
-## x^a * x^b = x^(a+b)  ## mostly done!
-## x^a * y^a = (x*y)^a  ## but ... undone by SymEngine
-function powsimp(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(powsimp(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(powsimp(BasicType(ex)))
-    end
-    ex1
-end
-
-function powsimp(ex::BasicType{Val{:Pow}})
-    ## x^(ax) -> (x^a)^x
-    m = pattern_match(ex, _1^(_2*___))
-    if m.match
-        a,b,c = [get(m.matches, k , Basic(1)) for k in (_1, _2, ___)]
-        ex = (a^b)^c
-    end
-
-    ex
-end
-
-    
-## 
-function powsimp(ex::BasicType{Val{:Mul}})
-    # x^n * y^n -> (x*y)^n
-    out = pattern_match(ex, _1^_2 * _3^2 * ___)
-    if out.match
-        a,b,n,c = [get(out.matches, k, Basic(1)) for k in (_1, _3, _2, ___)]
-        ex = (a * b)^n * c
-    end
-
-    out = pattern_match(ex, _1^2 * _1^_3 * ___)
-    if out.match
-        a,n,m,c = [get(out.matches, k, Basic(1)) for k in (_1, _2, _3, ___)]
-        ex = a^(n+m) * c
-    end
-    
-    ex
-end
-        
-
-function powsimp(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(powsimp, as)...))
-    end
-end
-        
-
-## powdenest
-## a^(b*c) = (a^b)^c
-function powdenest(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(powdenest(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(powdenest(BasicType(ex)))
-    end
-    ex1
-end
-
-function powdenest(ex::BasicType{Val{:Pow}})
-    as = get_args(ex)
-    if get_symengine_class(as[2]) == :Mul
-        bs = get_args(as[2])
-        (as[1]^bs[1])^powdenest(bs[2])
-    else
-        as[1]^powdenest(as[2])
-    end
-end
-
-    
-   
-
-function powdenest(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(powdenest, as)...))
-    end
-end
-
-
-
-
-## expand_power_exp / expand_power_base¶
-## expand_power_exp = x^(a+b) = x^a x^b  ## fighting tide, as SymEngine simplifies
-## expand_power_base = (x*y)^a = x^a * y^a
-
-function expand_power_exp(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(expand_power_exp(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(expand_power_exp(BasicType(ex)))
-    end
-    ex1
-end
-
-function expand_power_exp(ex::BasicType{Val{:Pow}})
-    out = pattern_match(ex, _1^(_2 + _3 + ___))
-    if out.match
-        x,a,b,c = [get(out.matches, k, Basic(0)) for k in (_1, _2, _3, ___)]
-        b = b + c
-        a, b = map(expand_power_exp, (a,b))
-        ex = x^a * x^b
-    end
-    ex
-end
-
-function expand_power_exp(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(expand_power_exp, as)...))
-    end
-end
-
-## expand_power_base
-## (x*y)^a --> x^a*y^a
-function expand_power_base(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(expand_power_base(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(expand_power_base(BasicType(ex)))
-    end
-    ex1
-end
-
-function expand_power_base(ex::BasicType{Val{:Pow}})
-    out = pattern_match(ex, (_1 *_2)^_3)
-    if out.match
-        x,y,a = [get(out.matches, k, Basic(1)) for k in (_1, _2, _3)]
-        ex = x^a * y^a
-    end
-    ex
-end
-
-function expand_power_base(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(expand_power_base, as)...))
-    end
-end
-
-
-## rewrite_trig
-## express in sin, cos or tan (not csc, sec or cot)
-function rewrite_trig(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(rewrite_trig(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(rewrite_trig(BasicType(ex)))
-    end
-    ex1
-end
-
-function rewrite_trig(ex::BasicType{Val{:Csc}})
-    as = get_args(ex)
-    1 / sin(map(rewrite_trig, as)...)
-end
-
-function rewrite_trig(ex::BasicType{Val{:Sec}})
-    as = get_args(ex)
-    1 / cos(map(rewrite_trig, as)...)
-end
-
-function rewrite_trig(ex::BasicType{Val{:Cot}})
-    as = get_args(ex)
-    1 / tan(map(rewrite_trig, as)...)
-end
-
-function rewrite_trig(ex::BasicType{Val{:Csch}})
-    as = get_args(ex)
-    1 / sinh(map(rewrite_trig, as)...)
-end
-
-function rewrite_trig(ex::BasicType{Val{:Sech}})
-    as = get_args(ex)
-    1 / cosh(map(rewrite_trig, as)...)
-end
-
-function rewrite_trig(ex::BasicType{Val{:Coth}})
-    as = get_args(ex)
-    1 / tanh(map(rewrite_trig, as)...)
-end
-
-function rewrite_trig(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(rewrite_trig, as)...))
-    end
-end
-
-
-## expand_trig
-## apply the sum or double angle identities,
-
-## sin(a+b) = sin(a) cos(b) + sin(b) cos(a)
-## cos(a + b) = cos(a) cos(b) - sin(a) sin(b)
-## tan(a+b) = (tan(a) + tan(b)) / (1 - tan(a)*tan(b))
-
-## sin(2a) = 2sin(a)cos(a)
-## cos(2b) = cos(a)^2 - sin(a)^2
-## tan(2a) = 2tan(a) / (1 - tan(a)^2)
-
-## sin(a/2) = sqrt((1-cos(a))/2) (pm)
-## cos(a/2) = sqrt((1+cos(a))/2) (pm)
-## tan(a/2) = sin(a) / (1 + cos(a))
-
-## hyperbolic too!
-
-function expand_trig(ex::Basic; recurse::Bool=true)
-    ex = rewrite_trig(ex, recurse=recurse)
-    ex1 = Basic(expand_trig(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(expand_trig(BasicType(ex)))
-    end
-    ex1
-end
-
-function expand_trig(ex::BasicType{Val{:Sin}})
-    arg = get_args(ex)[1]
-    ex = sin(expand_trig(arg))
-
-    pats =  (sin(_1 + __1)  => sin(_1)*cos(__1) + sin(__1) * cos(_1),
-             sin(2 * __1)        =>  2sin(__1)*cos(__1),
-             sin(_1 / 2)         => sqrt((1 - cos(_1))/2)
-             )
-    
-    ex = replaceall(Basic(ex), pats...)
-    ex
-end
-
-
-function expand_trig(ex::BasicType{Val{:Cos}})
-    
-    arg = get_args(ex)[1]
-    ex = cos(expand_trig(arg))
-
-    pats = (cos(_1 + __1)  =>  cos(_1)*cos(__1) - sin(_1) * sin(__1),
-            cos(2 * __1)        =>  cos(__1)^2 - sin(__1)^2,
-            cos(_1 / 2)         =>  sqrt((1 + cos(_1))/2)
-            )
-
-    ex = replaceall(Basic(ex), pats...)
-    ex
-    
-end
-
-
-function expand_trig(ex::BasicType{Val{:Tan}})
-    arg = get_args(ex)[1]    
-    ex =  tan(expand_trig(arg))
-
-    pats = (tan(_1 +  __1) => (tan(_1) + tan(__1 )) / (1 - tan(_1) * tan(__1)),
-            tan(2 * _1)        => 2*tan(_1) / (1 - tan(_1)^2),
-            tan(_1 / 2)        => sin(_1) / (1 + cos(_1))
-            )
-
-    ex = replaceall(Basic(ex), pats...)
-    ex
-  
-    
-end
-
-
-function expand_trig(ex::BasicType{Val{:Sinh}})
-    arg = get_args(ex)[1]
-    ex = sinh(expand_trig(arg))
-
-    pats = (sinh(_1 + __1) => sinh(_1)*cosh(__1) + sinh(__1) * cosh(_1),
-            sinh(2 * _1)       => 2 * sinh(_1) * cosh(_1),
-            sinh(_1 / 2)       => sqrt((cosh(_1) - 1)/2)
-            )
-    ex = replaceall(Basic(ex), pats...)
-    ex
-  
-end
-
-# https://en.wikipedia.org/wiki/Hyperbolic_function
-function expand_trig(ex::BasicType{Val{:Cosh}})
-    arg = get_args(ex)[1]
-    ex =  cosh(expand_trig(arg))
-
-    pats = (cosh(_1 + __1)  => sinh(_1)*cosh(__1) + sinh(__1 ) * cosh(_1),
-            cosh(2 * _1)         => cosh(_1)^2 + sinh(_1)^2,
-            cosh(_1 / 2)         => sqrt((cosh(_1) + 1) / 2)
-            )
-    ex = replaceall(Basic(ex), pats...)
-    ex
-            
-
-end
-   
-
-function expand_trig(ex::BasicType{Val{:Tanh}})
-            
-    arg = get_args(Basic(ex))[1]    
-    ex = tanh(expand_trig(arg))
-
-    pats = (tanh(_1  + __1) => (tanh(_1) + tanh( __1)) / (1 + tanh(_1) * tanh( __1)),
-            __1 * tanh(2*_1)    => __1 * 2 * tanh(_1) / (1 + tanh(_1)^2),
-            __1 * tanh(_1 / 2)  => __1 * (exp(_1) - 1) / (exp(_1) + 1)
-            )
-    ex = replaceall(Basic(ex), pats...)
-    ex 
-end
-
-function expand_trig(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(expand_trig, as)...))
-    end
-end
-
-
-
-
-
-## trigsimp
-## 2sin(x)cos(x) -> sin(2x); 2sinh(x)cosh(x) -> sinh(2x)
-## cos^2(x) - sin^2(x)
-
-
-function trigsimp(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(trigsimp(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(trigsimp(BasicType(ex)))
-    end
-    ex1
-end
-
-
-
-
-
-function trigsimp(ex::BasicType{Val{:Mul}})
-
-    pats = (__3 * sin(_1) * cos(_1)   => __3 * sin(2 * _1)/2,
-            __3 * sinh(_1) * cosh(_1) => __3 * sinh(2 * _1)/2
-            )
-
-    ex = replaceall(Basic(ex), pats...)
-    
-    ex
-end
-
-
-
-function trigsimp(ex::BasicType{Val{:Add}})
-    pats = (sin(_1)*cos(_2) + sin(_2)*cos(_1) => sin(_1 + _2),
-            sin(_1)*cos(_2) - sin(_2)*cos(_1) => sin(_1 - _2),
-            cos(_1)^2 - sin(_1)^2             => cos(2 * _1),
-            -cos(_1)^2 + sin(_1)^2            => -cos(2 * _1))
-
-    ex = replaceall(Basic(ex), pats...)
-            
-            
-    ## cos(a)cos(b) - sin(a)*sin(b) -> cos(a + b)
-    match, out = _check_exchangeable_pair(ex, cos(_1)*cos(_2), -sin(_1)*sin(_2))
-    if match
-        ea1, ea2, rest, m1, m2 = out
-        ex = rest + cos(m1 + m2)
-    end
-
-    ## cos(a)cos(b) + sin(a)*sin(b) -> cos(a - b)
-    match, out = _check_exchangeable_pair(ex, cos(_1)*cos(_2), sin(_1)*sin(_2))
-    if match
-        ea1, ea2, rest, m1, m2 = out
-        ex = rest + cos(m1 - m2)
-    end
-
-    ex
-
-end
-
-        
-    
-
-
-function trigsimp(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(trigsimp, as)...))
-    end
-end
-
-
-####
 """
-combsimp handles some gamma relationships
+    expand_trig
+
+Apply double angle formulas to express as products of sines and cosines
 """
-function combsimp(ex::Basic; recurse::Bool=true)
-    ex1 = Basic(combsimp(BasicType(ex)))
-    while recurse && ex1 != ex
-        ex = ex1
-        ex1 = Basic(combsimp(BasicType(ex)))
-    end
-    ex1
-end
+expand_trig(ex::Basic) = _fixed_point(ExpandTrig(), ex)
+
+_simp(T::ExpandTrig, ex::BasicType{Val{:Sin}}) = sxy(Basic(ex))
+_simp(T::ExpandTrig, ex::BasicType{Val{:Cos}}) = cxy(Basic(ex))
 
 
-function combsimp(ex::BasicType{Val{:Mul}})
-    ## gamma(1 - z)  gamma(z) ->  pi/sin(pi z_
-    out = pattern_match( ex, gamma(1 - _1) * gamma(_1) * ___)
-    if out.match
-        a,c = [get(out.matches, k, Basic(1)) for k in (_1, ___)]
-        ex = PI / sin(PI*a) * c
-    end
+##################################################
 
-    ## gamma(z) * gamma(z + 1//2)
-    out = pattern_match( ex, gamma(_1) * gamma(_1 + 1//2) * ___)
-    if out.match
-        a,c = [get(out.matches, k, Basic(1)) for k in (_1, ___)]
-        ex = 2^(1 - 2a) * sqrt(PI)  * gamma(2a)
-    end
 
-    ex
-end
-
-function combsimp(ex::BasicType)
-    as = get_args(ex)
-    if length(as) == 0
-        return ex
-    else
-        eval(Expr(:call, get_fun(ex), map(combsimp, as)...))
-    end
-end

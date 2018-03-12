@@ -1,609 +1,973 @@
-using Iterators
-
-## Mull over
-## variables of the form _x and x_
-## the latter can beused to make replacement reach replace(sin(2x), sin(x_) => -cos(x)) would  match x_ with 2x and return -cos(2x). The point being x_ would use x as key
-## this would not work in sympy, as we need to identify x_ with x and the only way I can think of would be: Basic(Symbolx(string(x)[1:end-1]))
-## normalize(x) (endswith(string(x), "_") ? Basic(...) : x
-
-
-## slurpvar -> variadic match: match 0,1,... terms in a sum or product
-
-## TODO
-## alloctions tuples, not dictionary?
-## pass along dictionary?
-## variadic
-## tighten up
-## rename get_symengine_class -> head
-## get_arg -> args
-## put in module
-## export variables?
-
-
-
-
-## Fix
-#d = match(_1^_2*__1, x^y*1) # __1 => 1 should match
-
-
-## need to check __ and ___ consoliate?
-
-
+##################################################
+##
+## Pattern matching. Follows the easier part of the masters
+## thesis referenced here
+## https://github.com/HPAC/matchpy/blob/master/matchpy/
+##
+## Part of the code in `pm.jl` is derived from the MIT licensed code
+## of https://github.com/HPAC/matchpy/blob/master/matchpy/
+##
+## 
+## SymEngine things
 BasicType = SymEngine.BasicType
-get_symengine_class(ex::Basic) = SymEngine.get_symengine_class(ex)
-get_symengine_class(ex::BasicType) = get_symengine_class(Basic(ex))
-get_args(ex::Basic) = SymEngine.get_args(ex)
-get_args(ex::BasicType) = get_args(Basic(ex))
 
-## common pattern: extract operator for these two
-prod_sum(ex::BasicType{Val{:Mul}}) = prod
-prod_sum(ex::BasicType{Val{:Add}}) = sum
-prod_sum(ex::Basic) = prod_sum(BasicType(ex))
-
-# zero or one
-unit_value(ex::BasicType{Val{:Mul}}) = Basic(1)
-unit_value(ex::BasicType{Val{:Add}}) = Basic(0)
-unit_value(ex::Basic) = unit_value(BasicType(ex))
+head(ex::Basic) = SymEngine.get_symengine_class(ex)
+args(ex::Basic)::Vector{Basic} = SymEngine.get_args(ex)
 
 
 
-## We use "_var" for a place holder
-## We use "__var" for a "slurper"
-
-## TODO: add `phs` for pass in placeholders
-const DEFAULT_PHS = Any[Set{Basic}()]
-
-set_default_placeholders(set) = (DEFAULT_PHS[1] = set)
-
-isplaceholder(x, phs=DEFAULT_PHS[1]) = startswith(string(x), "_") || endswith(string(x), "_") || in(x, phs)
-isdontcare(x) = string(x) == "_ϕ"
-isslurpvar(x) = startswith(string(x), "__") || endswith(string(x), "__")
-isdontcareslurp(x) = string(x) == "__ϕ"
+## call a SymEngine function from a symbol
+call_fun(fn::Symbol, args) = call_fun(Val{fn}, fn, args)
+call_fun(::Type{Val{:Add}}, fn, args) = isempty(args) ? Basic(0) : _call_fun(fn, args)
+call_fun(::Type{Val{:Mul}}, fn, args) = isempty(args) ? Basic(1) : _call_fun(fn, args)
+call_fun(::Type{Val{T}}, fn, args) where {T} = _call_fun(fn, args)
+_call_fun(fn, args) = eval(Expr(:call, SymEngine.map_fn(fn, SymEngine.fn_map),args...))
 
 
 
+#using Multisets
+_setdiff(m1::Multiset, m2::Multiset) = m1 - intersect(m1, m2)
 
+### Utilities ##################################################
 
-mutable struct PatternMatch{K,V}
-    match::Bool
-    matches::Dict{K,V}
-end
-PatternMatch(m::Bool) = PatternMatch(m, Dict{Basic, Basic}())
-
-Base.ismatch(p::PatternMatch) = p.match
-matches(p::PatternMatch) = p.matches
-export matches
-
-function Base.show(io::IO, p::PatternMatch)
-    println(io, "Pattern matches: ", ismatch(p))
-    if ismatch(p)
-        for (k,v) in matches(p)
-            println(io, "  ", k, " => ", v)
-        end
+## return vectors of vals, counts (sorted) as a tuple
+tally(ps::Vector) = tally(Multiset(ps))
+function tally(ps::Multiset{T}) where {T}
+    d = Dict{T, Int}()
+    for k in collect(ps)
+        haskey(d, k) ? (d[k]+=1) : (d[k] = 1)
     end
+    ks = collect(keys(d))
+    vs = collect(values(d))
+
+    sigma = sortperm(vs, rev=true)
+    (ks[sigma], vs[sigma])
 end
 
-Base.:&(p::PatternMatch, q::PatternMatch) = ismatch(p) & ismatch(q)
-Base.:|(p::PatternMatch, q::PatternMatch) = ismatch(p) | ismatch(q)
+# so we can call repeat(a,m) to get what we want for a vector or not
+_repeat(a::Basic;inner=times) = repeat([a], inner=inner)
 
-## true if match==match and _x vars are equal 
-function Base.:(==)(p::PatternMatch, q::PatternMatch)
-    ismatch(p) == ismatch(q)     || return false
-    ismatch(p)                || return true # both false
+### Define wildcard patterns ##############################################
 
-    ## compare dicts
-    #    pks = setdiff(collect(keys(matches(p))), __)
-    #    qks = setdiff(collect(keys(matches(q))), __)
-    pks = filter(!isslurpvar, collect(keys(matches(p))))
-    qks = filter(!isslurpvar, collect(keys(matches(q))))
-    
-    
-    length(pks) == length(qks) || return false
-    for k in pks
-        matches(p)[k] == matches(q)[k] || return false
-    end
-    true
+
+# this allocates, and there isn't much to do about it
+# x_: regular variable: 1 match (dot variable)
+# x__: match 1 or more terms (plus variable) (in * or +)
+# x___: match 0, 1 or more terms (star variable)
+_check_dashes(u, pattern, ::Type{Val{false}}) =  endswith(u, pattern) ##startswith(u, pattern) || endswith(u, pattern)
+function _check_dashes(u, pattern, ::Type{Val{true}})
+    _check_dashes(u, pattern, Val{false}) && !_check_dashes(u, pattern*"_", Val{false})
 end
 
-# Are (k,v) in q all in p?
-function Base.issubset(q::PatternMatch, p::PatternMatch)
-    (!ismatch(p) || !ismatch(q)) && return false
-    for (k, v) in matches(q)
-        isdontcare(k) || isdontcareslurp(k) && continue
-        if haskey(matches(p), k)
-            matches(p)[k] == v || return false
-        end
-    end
-    true
+iswildcard(x,exact=false) = issymbolic(x) && _check_dashes(SymEngine.toString(x), "_", Val{exact})
+ispluswildcard(x, exact=false) = issymbolic(x) && _check_dashes(SymEngine.toString(x), "__", Val{exact})
+isstarwildcard(x, exact=false) = issymbolic(x) && _check_dashes(SymEngine.toString(x), "___", Val{exact})
+
+onlywildcard(x) = iswildcard(x,true)
+onlypluswildcard(x) = ispluswildcard(x, true)
+onlystarwildcard(x) = isstarwildcard(x, false)  ## 3 or more is star wildcard
+
+isconstantpattern(p::Basic) = length(filter(iswildcard, free_symbols(p))) == 0
+isconstantpattern(fn::Symbol) = true
+
+## we use \phi_ for wildcards we don't care about "___" in match py
+const ignore_wildcard_re = r"^ϕ"
+function ignore_wildcard(x)
+    issymbolic(x) || return false
+    s = SymEngine.toString(x)
+    _check_dashes(s, "_") || return false
+    return ismatch(ignore_wildcard, s)
 end
 
-## do dictionaries p q match where they have common keys
-function isconsistent(p::Dict, q::Dict)
-    common_keys = intersect(keys(p), keys(q))
-    for k in common_keys
-        p[k] == q[k] || return false
+# ### Constraints XXX not implemented
+
+# struct Constraint{S,T}
+# op::S
+# lhs::T
+# rhs::T
+# end
+# function Base.show(io::IO, p::Constraint)
+#     println(io, p.lhs, " ", p.op, " ", p.rhs)
+# end
+
+# ## Evaluate a constraint returning true or false using values in x, a dictionary
+# (p::Constraint)(x)::Bool = p.op(p.lhs(x...), p.rhs(x...))
+
+# # the main constraints    
+# Gt(a,b)  = Constraint(>,  Basic(a),Basic(b))
+# Ge(a,b)  = Constraint(>=, Basic(a),Basic(b))
+# Eq(a,b)  = Constraint(==, Basic(a),Basic(b))
+# Neq(a,b) = Constraint(!=, Basic(a),Basic(b))
+# Le(a,b)  = Constraint(<=, Basic(a),Basic(b))
+# Lt(a,b)  = Constraint(<,  Basic(a),Basic(b))
+
+
+## some predicates on values
+import Base: isinteger, isnumber, iseven, isodd
+
+issymbolic(::BasicType{Val{:Symbol}}) = true
+issymbolic(::BasicType) = false
+issymbolic(x::Basic) = issymbolic(BasicType(x))
+
+isnumber(::T) where {T <: SymEngine.BasicNumber} = true
+isnumber(::BasicType) = false
+isnumber(x::Basic) = isnumber(BasicType(x))
+
+iseven(x::Basic) = isnumber(x) && iseven(N(x))
+isodd(x::Basic) = isnumber(x) && isodd(N(x))
+
+ispositive(x::Union{BasicType{Val{:Integer}}, BasicType{Val{:Rational}}}) = x > 0
+ispositive(::BasicType) = false
+ispositive(x::Basic) = ispositive(BasicType(x))
+
+
+isinteger(x::BasicType{Val{:Integer}}) = true
+isinteger(::BasicType) = false
+isinteger(x::Basic) = isinteger(BasicType(x))
+
+
+
+## Functions
+
+arity(fn::Type{Val{:Symbol}}) = 0
+arity(fn::T) where {T <: SymEngine.BasicNumber} = 0
+arity(fn::Type{Val{:Pow}}) = 2
+arity(fn::Type{Val{:Add}}) = 99
+arity(fn::Type{Val{:Mul}}) = 99
+arity(fn::Type{Val{T}}) where {T} = 1
+arity(fn::Symbol) = arity(Val{fn})
+
+iscommutative(::Type{Val{:Add}}) = true
+iscommutative(::Type{Val{:Mul}}) = true
+iscommutative(::Type{Val{T}}) where {T} = false
+iscommutative(fn::Symbol) = iscommutative(Val{fn})
+
+isassociative(::Type{Val{:Add}}) = true
+isassociative(::Type{Val{:Mul}}) = true
+isassociative(::Type{Val{T}}) where {T} = false
+isassociative(fn::Symbol) = isassociative(Val{fn})
+
+
+## Dictionary things
+function compatible_substitutions(d::Dict, d1::Dict)
+    for k in intersect(keys(d), keys(d1))
+        d[k] == d1[k] || return false
     end
     return true
 end
-isconsistent(p::PatternMatch, q::PatternMatch) = (ismatch(p)==ismatch(q) && isconsistent(matches(p), matches(q)))
-## does q agree with p where commonly defined? If so, return true *and* mutate p
-## agree discounts __ value 
-function agree!(p::PatternMatch, q::PatternMatch)
-    (!ismatch(p) || !ismatch(q)) && return false
 
-    # check values in q match values in p or return false
-    #!issubset(q, p) && return false
-    !isconsistent(q, p) && return false
-
-    # now update values in p for keys in q but not p
-    for (k,v) in matches(q)
-        isdontcare(k) && continue
-        if isslurpvar(k)
-            if haskey(matches(p),k)
-                push!(p.matches[k], v)
-            else
-                p.matches[k] = v
-            end
-            continue
-        end
-        p.matches[k] = v
+# filter for compatability then merge. Returns new Set, does not mutate
+function checked_merge(theta::Set, sigma::Dict)
+    if length(theta) >= 1
+        cmpts = filter(d -> compatible_substitutions(d, sigma), theta)
+        map(u->merge(sigma, u), cmpts)
+    else
+        Set((sigma, ))
     end
-
-    return true
 end
 
-## what to pass down to matches!!
-function pattern_match(ex::Basic, pat::Basic, phs=DEFAULT_PHS[1])
-    p_op = get_symengine_class(pat)
-    ## symbols are special
-    if p_op == :Symbol
-        #pat in _allvars && return PatternMatch(true, Dict(pat=>ex))
-        isplaceholder(pat, phs) && return PatternMatch(true, Dict(pat=>ex))        
-        ex == pat && return PatternMatch(true)
-        return PatternMatch(false)
+# what is this???
+function checked_merge(theta::Set, thetap::Set)
+    if length(theta) == 0
+        return thetap
     end
-
-    pattern_match(BasicType(ex), pat, phs)
-end
-
-
-function pattern_match(ex::Union{BasicType{Val{:Mul}}, BasicType{Val{:Add}}}, pat, phs=DEFAULT_PHS[1])
-    ## what to do
-    op = get_symengine_class(Basic(ex))
-    p_op = get_symengine_class(pat)
-
-    op != p_op && return PatternMatch(false)
-
-    eas, pas = get_args(Basic(ex)), get_args(pat)      
-    sort!(eas, by=SymEngine.toString)
-    
-    slurp = false
-    slurpingwith = filter(isslurpvar, pas) #collect(filter(var -> var in pas, __slurpvars))
-    length(slurpingwith) > 1 && return throw(ArgumentError("Too many slurping variables"))
-    if length(slurpingwith) == 1
-        slurp = true
-        pas = setdiff(pas, slurpingwith)
-        slurpvar = slurpingwith[1]
-    end
-    
-
-    (length(eas) < length(pas)) || slurp || length(eas) == length(pas) || return PatternMatch(false)
-
-    
-
-    ## need to ensure we don't consider cases where we match same thing!
-    d = Dict{Basic, Basic}()
-    matched_terms = Basic[]
-    
-    for p in pas
-        found_match=false
-        for expr in eas
-            expr in matched_terms && continue
-            pm = match(p, expr)
-            if ismatch(pm)
-
-                push!(matched_terms, expr)
-                isconsistent(d, matches(pm)) || return PatternMatch(false)
-                merge!(d, matches(pm))
-                found_match=true
-                break
+    out = Set()
+    for m in thetap
+        for m1 in theta
+            if compatible_substitutions(m, m1)
+                push!(out, merge(m, m1))
             end
         end
-        !found_match && return PatternMatch(false)
     end
+    out
 
-    # handle slurping variables!
-    if slurp
-        not_matched = setdiff(eas, matched_terms)
-        if length(not_matched) > 0
-            d[slurpvar] = prod_sum(ex)(not_matched) 
-        else
-            d[slurpvar] = unit_value(ex)
-        end
-    end
-
-    return PatternMatch(true,d)
-
-    # ## we check M x N
-    # d = Dict()
-    # for p in pas
-    #     d[p] = cases(eas, p, phs)
-    # end
-    
-    # c = tuple()
-    # for case in product([d[k] for k in keys(d)]...)
-    #     out = case[1][1]
-    #     a = true
-    #     s = Set(case[1][2])
-    #     for c in case[2:end]
-    #         u, i = c
-    #         if i in s
-    #             a = false
-    #             break
-    #         end
-    #         push!(s, i)
-            
-    #         a = agree!(out, u)
-    #         a || continue
-    #     end
-    #     if a
-    #         ## if slurp, well we slurp up other variables
-    #         if slurp
-    #             is = [c[2] for c in case]
-    #             is = setdiff(1:length(eas), is)
-    #             out.matches[slurpingwith[1]] = prod_sum(ex)(eas[is])
-    #         end
-    #         return out
-    #         break
-    #     end
-    # end
-
-    return PatternMatch(false)
-    
 end
 
-function pattern_match(ex::SymEngine.BasicType, pat, phs=DEFAULT_PHS[1])
-    ex = Basic(ex)
-    op = get_symengine_class(ex)
-    p_op = get_symengine_class(pat)
 
-    if p_op in [:Integer, :Rational, :Complex]
-        ex != pat && return PatternMatch(false)
-        return PatternMatch(true)
+## Implement matchpy things
+# out type
+U = Union{Basic, Vector{Basic}, Tuple{Symbol, Vector{Basic}}}
+#aDict(args...) = Dict{Basic, U}(args...)
+aDict(args...) = Dict{Basic, Any}(args...)
+empty_set() = Set(Dict{Basic, Any}[])
+    
+const blank_dict = aDict()
+const ↯ = (false, blank_dict)
+const NO_MATCH = Set(Dict{Basic,Any}[])
+
+
+## return (Bool, Dict{Basic,Basic})
+## Syntactic -- not associative *or* commutative
+## must match exactly
+## returns a tuple `(success, sigmap)`
+## A match, sigmap, extends sigma and satisfies p(sigmap...) = s
+function syntactic_match(s, p, sigma=aDict())  # subject, pattern, sigma::Dict
+
+    isconstantpattern(p) && return (p==s, blank_dict)
+    
+    if onlywildcard(p)
+        sigmap = aDict(p=>s)
+        val = compatible_substitutions(sigma, sigmap)
+        return (val ? (val, merge(sigma, sigmap)) :  (val, sigma))
     end
 
-    if p_op == :Symbol
-        #        if pat in _allvars
-        if isplaceholder(pat, phs)
-            out = PatternMatch(true)
+    head(s) != head(p) && return (false,↯)
 
-            
-            agree!(out, PatternMatch(true, Dict(pat => ex)))
+    s_args, p_args = args(s), args(p)
+    length(s_args) != length(p_args) && return (false, ↯)
+
+    for i in eachindex(s_args)
+        success, sigmap = syntactic_match(s_args[i], p_args[i], sigma)
+
+        !success && return  (false, ↯)
+        !compatible_substitutions(sigmap, sigma) && return (false, ↯)
+
+        merge!(sigma, sigmap)
+    end
+    return (true, sigma)
+end
+
+#
+## ss an array of subjects
+## p a pattern
+## fa a symbol representing an *associative function*, :Add, :Mul. Use :nothing for nothing
+## Theta a set of valid (partial) substitutions
+## returns a sset
+"""
+    match_one_to_one
+
+Match a subject with one term
+
+Length `ss` must be 1 to match, unless`p` is a star or plus wildcard
+
+* `ss` is a collection of subjects
+* `p` a pattern
+* `theta` a set of partial substitutions.
+* `comm` if true, the ss values may be permuted to match
+* `assoc` if true, wildcards are used like plusvariables,
+* `fn` a function symbol of an associative function (e.g, `:Add` and `:Mul`.)
+
+Returns a set extending theta.
+"""
+function match_one_to_one(ss, p, theta::Set=Set((aDict(),)),
+                          comm=false,  fn=:nothing, assoc=fn==:nothing?false:isassociative(fn))
+    
+    n = length(ss)
+    # p in F0
+    if isconstantpattern(p) 
+
+        n == 1 && p == ss[1] && return checked_merge(theta, aDict())  
+
+    elseif onlywildcard(p) && !assoc        # regular variable pattern
+
+        sigmap = Dict(p=>ss[1])
+        n == 1 && return checked_merge(theta, sigmap)
+
+    elseif iswildcard(p)        # sequence variable pattern?
+
+        if assoc  && fn != :nothing ## associative function then we can combine
+            sigmap = Dict(p=>call_fun(fn, ss))
+        elseif assoc || !onlywildcard(p)
+            sigmap = Dict(p=>ss)           # matches the rest e.g. a + x_ ~ a + b + c = a + (b+c), so x_ => b+c
+        end
+
+        (isstarwildcard(p) || n >= 1) && return checked_merge(theta, sigmap)
+
+
+    elseif n == 1
+
+        h = head(p)
+        if h == head(ss[1])
+            qas, pas = args(ss[1]), args(p)
+
+            # really here we want to pass along only :Add and :Mul
+            fap = isassociative(h) ? h : :nothing
+            out = Set()
+            for sigma in theta
+                out = union(out, Set(match_sequence(qas, pas, sigma, Val{iscommutative(fap)}, fap)))
+            end
             return out
-        else
-            return PatternMatch(ex == pat)
-        end
-    end
-
-    ## recurse through arguments
-    eas, pas = get_args(ex), get_args(pat)
-    
-    ## Special case
-    ## Handle slurpvars so that x ~ _1 + __1 will yield (_1 => x, __1 => 0)
-    ## and x ~ _1 * __1 will yield (_1 => x, __1 => 1)
-    ## even though expressions don't match at the op level. 
-    if p_op in [:Mul, :Add]
-        slurpvars = filter(isslurpvar, pas)
-        if length(slurpvars) > 0 && length(pas) - length(slurpvars) == 1
-            pm = pattern_match(ex, setdiff(pas, slurpvars)[1])
-            agree!(pm, PatternMatch(true, Dict(slurpvar=> p_op==:Mul ? Basic(1) : Basic(0) for slurpvar in slurpvars)))
-            return pm
-        end
-    end
-
-    if p_op in [:Pow] && isslurpvar(pas[2]) && op != :Pow
-        pm = pattern_match(ex, pas[1])
-        agree!(pm, PatternMatch(true, Dict(pas[2] => 1)))
-        return pm
-    end
-                                
-
-    
-    op !== p_op && return PatternMatch(false)
-
-    if op in [:Add, :Mul]
-        sort!(eas, by=SymEngine.toString) ## makes some things work... (_1*_2 + _1*_3 depends on sort order when matching)
-    end
-
-    length(eas) < length(pas) && return PatternMatch(false)
-
-    ## need to consider different orders
-
-    out = PatternMatch(true)
-    for (e,p) in zip(eas, pas)
-
-        if !agree!(out, pattern_match(e, p, phs))
-            return PatternMatch(false)
         end
     end
     
-    return out
+    return NO_MATCH
+    
+end
+##################################################
+
+## If p is a pattern and s a subject, then a match is a
+## dictionary sigma whose keys are wildcards such that
+## p(sigma...) = s
+## 
+## This function performs a partial substitution by sigma
+function _psubs(patterns, sigma::Pair{Basic, Basic})
+    subs.(patterns, sigma)
 end
 
-## there is an issue with patterns like sin(_1)*sin(_2) - cos(_2)*cos(_1)
-## there is no guarantee what term gets labeled sin(_1)*sin(_2) so comparing _2 across pieces
-## of the pattern is not good.
-## this handles this case, though should be generalized. However, note that there is n! checking (n=subpatterns)
-function _check_exchangeable_pair(ex, pat1, pat2, phs=DEFAULT_PHS[1])
-    
-    eas = SymEngine.get_args(Basic(ex))
-    op = SymEngine.get_symengine_class(Basic(ex))
-    
-    n = length(eas)
-    
-    c1 = cases(eas, pat1, phs)
-    c2 = cases(eas, pat2, phs)
-
-    for case in product(c1, c2)
-        pma, i = case[1]
-        pmb, j = case[2]
-        i == j && continue # next case
-        da, db = pma.matches, pmb.matches
-        if (da[_1] == db[_1] && da[_2] == db[_2]) ||
-            (da[_1] == db[_2] && da[_2] == db[_1])
-            ## a match
-            rest = eas[setdiff(1:n, [i,j])]
-            
-            return (true, (eas[i], eas[j], prod_sum(ex)(rest), da[_1], da[_2]))
+# [x_,x__,y_] subs {x_=>1, x__=>[2,3,4], y_=>[5,6]} --> [1, 2,3,4,5,6] flattened one level
+function _psubs(patterns, sigma::Pair{Basic, Vector{T}}) where {T}
+    k,v = sigma
+    out = Basic[]
+    for s in patterns
+        if k in free_symbols(s)
+            append!(out, [subs(s, k=>vi) for vi in v])
+        else
+            push!(out, s)
         end
     end
-    return(false, tuple())
+    out
+end
+
+function psubs(patterns, sigma::Dict)
+    out = patterns
+    for (k,v) in sigma
+        out = _psubs(out, k=>v)
+    end
+    out
+end
+
+
+## reduce after partial substitutions. Return multiset
+function reduce_subjects_patterns(subjects, patterns, sigma)
+    mss = Multiset(subjects)
+    ps = psubs(patterns, sigma)
+    mps = Multiset(ps)
+    mss - mps, mps - mss
+end
+
+## is there an issue with patterns.(sigma) ~ subjects
+function so_far_so_good(subjects, patterns, sigma)::Bool
+    lhs, rhs = collect.(reduce_subjects_patterns(subjects, patterns, sigma))
+    ## we are bad if there are non constants on right (as constants are matched up)
+    nconsts = length(filter(isconstantpattern, rhs))
+    nconsts > 0 && return false
+    length(rhs) - nconsts == 0 && length(lhs) > 0 && return false
+    ## we are bad if rhs has wildcards or star
+    return true
+end
+##
+
+##################################################
+
+## Helper functions
+function remove_constant_patterns(subjects, patterns, sigma=Dict())
+    lhs, rhs = reduce_subjects_patterns(subjects, patterns, sigma)
+    collect(_setdiff(lhs, rhs)), collect(_setdiff(rhs, lhs))
+end
+
+# check that matched variables in sigma are goo
+function check_matched_variables(subjects, patterns, sigma::Dict)
+    if so_far_so_good(subjects, patterns, sigma)
+        (sigma,)
+    else
+        ()
+    end
+end
+
+
+
+### helpers for non-variable pattern check
+
+function _ms(u)
+    p,s,sigma = u
+    hp, hs = head(p), head(s)
+    hp != hs && return ()
+    
+    comm = Val{iscommutative(hp)}
+    fn, assoc = isassociative(hp) ? (hp, true) : (:nothing, false)
+
+    match_sequence( args(s), args(p), sigma,
+                       comm, fn, assoc)
+end
+
+function _check_pp(p, ss, sigma=Dict())
+    o = generator_chain((),
+                        () -> (s for s in ss),
+                        (s) -> _ms((p,s,sigma))
+                        )
+
+    o
+end
+
+## take expressions like `sin(x_)` and check
+function check_non_variable_patterns(ss, ps, sigma)
+
+    ss, ps = reduce_subjects_patterns(ss, ps, sigma)
+    ps = collect(Iterators.filter(!iswildcard, collect(ps))) # compound expressions
+
+    isempty(ps) && return (sigma,)
+    
+    theta = Set()
+    op = generator_chain((sigma,),
+                            ((sigma) -> _check_pp(ps[i], collect(ss), sigma) for i in eachindex(ps))...,
+                            (sigma) -> sigma in theta ? () : (push!(theta, sigma); (sigma,))
+                            )
+    op
+end
+
+### --------------------------------------------------
+
+
+## Check regular variables helper
+function assign_wildcard(p, k, sks,svs, sigma)
+    out = Set()
+    for (i, (val, nk)) in enumerate(zip(sks, svs))
+        nk < k && continue
+        if haskey(sigma, p)
+            sigma[p] == val || continue
+        end
+        svscopy = copy(svs)
+        svscopy[i] -= k
+        push!(out, (sks, svscopy, merge(sigma, Dict(p=>val))))
+    end
+    out
+end
+
+function check_regular_variables(subjects, patterns, sigma::Dict)
+
+    ## we reduce subjects, patterns, then use our algorithm
+    ss, ps = remove_constant_patterns(subjects, patterns, sigma)
+
+    sks, svs =  tally(ss)
+    pks, pvs = tally(filter(onlywildcard, ps))
+
+
+    o = generator_chain((),
+                        () -> ((sks, svs, sigma),),
+                        (u-> assign_wildcard(p, v, u...) for (p,v) in zip(pks, pvs))...,
+                        (u) -> ((u[3],))
+                           )
+    o
+end
+
+### --------------------------------------------------
+
+
+
+
+### --------------------------------------------------
+
+## Check for sequence variables
+
+## return generator
+function _check_sv_init(ss, ps, sigma, assoc, allvars, svals, N)
+    ss, ps = remove_constant_patterns(ss, ps, sigma)
+
+    plusvs = Basic[]
+    starvs = Basic[]
+    for p in ps
+        if onlypluswildcard(p) || (assoc && onlywildcard(p))
+            push!(plusvs, p)
+        elseif onlystarwildcard(p)
+            push!(starvs, p)
+        end
+    end
+    
+    nplus = length(plusvs)
+    if nplus > length(ss)
+        return empty_set() # too many plus variables
+    end
+
+    
+    nstars = length(starvs)
+    _svals, scnts = tally(ss)
+    plusvals, pluscnts = tally(plusvs)
+    starvals, starcnts = tally(starvs)
+
+    
+    theta = empty_set()
+
+    empty!(allvars)
+    append!(allvars,vcat(plusvals, starvals))
+    empty!(svals)
+    append!(svals, _svals)
+    empty!(N)
+    push!(N, length(plusvals))
+    
+    ## nothing to do
+    if isempty(allvars) # nothing to do
+        if length(ss) > 0
+            return empty_set() # can't eat up ss values
+        else
+            return Set((sigma,))
+        end
+    end
+
+    if length(plusvals) > length(ss)
+        return Set()
+    end
+    if length(ss) == 0
+        sigmap = Dict(k=>(fn==:nothing ? Basic[] : call_fun(fn, Basic[])) for k in starvals)
+        out = empty_set()
+        if compatible_substitutions(sigma, sigmap)
+            push!(out, merge(sigma, sigmap))
+        end
+        return out
+    end
+
+    
+    cfs = vcat(pluscnts, starcnts)
+
+    gens = (solve_linear_diophantine(cnt, cfs) for cnt in scnts)
+    itr = gen_product(gens...)
+
+    itr
+end
+
+function _allocate_sols(sols, sigma, fn, allvars, svals, N)
+    
+    d = aDict()
+    star_ok = true
+
+    for (i,var) in enumerate(allvars)
+        this_many = [a[i] for a in sols]
+        if i <= N[1] && sum(this_many) == 0
+            star_ok=false
+            break
+        end
+        val = Basic[]
+        for k in eachindex(this_many)
+            nvals = _repeat(svals[k], inner=this_many[k])
+            append!(val, nvals)
+        end
+
+        # wrap in associative function
+        d[var] = isassociative(fn) ? call_fun(fn, val) : val
+
+    end
+
+    !star_ok && return ()
+    if compatible_substitutions(sigma, d)
+        sigmap = merge(sigma, d)
+        return (sigmap,)
+    end
+    return ()
+end
+
+### When matching [a,a,a,a,b,b,c] ~ [x__, x__, y___] we need to
+## solve equations 4 = 2x + y where 4 is number of a's, x >=1 and y >= 0
+## this has solutions (2,0), (1,2), and (0,4)
+## 2 = 2x + y: (1,0), (0,2)
+## 1 = 2x + y: (0,1)
+## we then combine (2,0),(1,0), and (0,1) -> x__ -> [a,a,b], y__ -> [c]
+## (2,0),(0,2),(0,1) -> x__ -> [a,a], y___ -> [b,b,c] ...
+## sigma -> generator of sigmas...
+##
+## The code copies some of that in matchpy for solving linear diophantine equations
+function check_sequence_variables(ss, ps, sigma,
+                                  fn=:nothing, assoc=false)
+    
+    allvars= Basic[]  # not so pretty as we want to share values across chain
+    svals = Basic[]
+    N = Int[]
+
+    o = generator_chain((),
+                        () -> _check_sv_init(ss, ps, sigma, assoc, allvars, svals, N),
+                        (sols) -> _allocate_sols(sols, sigma, fn, allvars, svals, N))
+
+    o
+end
+
+### --------------------------------------------------
+
+## Assemble pieces for matching ss ~ ps with commutative or associative
+
+abstract type AbstractMatchObject end
+function Base.show(io::IO, o::AbstractMatchObject)
+    if isempty(o)
+        println(io, "Empty match object")
+    else
+        println(io, "Non-empty, iterable match object. Use `first` to see one, `collect` for all.")
+    end
+end
+
+
+## iterator interface for MatchObjects
+## These just make the interace nicer
+struct MatchObject <: AbstractMatchObject
+itr
+end
+Base.iteratorsize(itertype::MatchObject)= Base.SizeUnknown()
+Base.start(o::MatchObject) = start(o.itr)
+
+Base.done(o::MatchObject, st) = done(o.itr, st)
+Base.next(o::MatchObject, st) = next(o.itr, st)
+
+###  --------------------------------------------------
+
+# allocate fixed sum values
+function allocate_ks_to_vars(ks, ss, ps, sigma, fn, assoc)
+    i,j=0,0 #1,1
+    thetap = Set((deepcopy(sigma),))
+        
+    for pl in ps
+        lsub = 1 
+        if ispluswildcard(pl) || (iswildcard(pl) && assoc)
+            lsub = lsub + ks[1+j]
+            if onlystarwildcard(pl)
+                lsub -= 1
+            end
+            j += 1
+        end
+        ssp = ss[(i+1):(i+lsub)]
+        fn, assoc = isassociative(fn) ? (fn, true) : (:nothing, assoc)
+
+        thetap = match_one_to_one(ssp, pl, thetap, Val{false}, fn, assoc)
+        if isempty(thetap)
+            break
+        end
+        i += lsub 
+    end
+
+    thetap
+end
+
+
+## non-commutative matching
+function match_sequence(ss, ps, sigma, commutative::Type{Val{false}},
+                        fn=:nothing, assoc=fn==:nothing?false:isassociative(fn))
+
+    n, m = length(ss), length(ps)
+    
+    ## number of star variables (zero, onem or more). Here
+    ## m - nstar number of patterns that must match, if more than n too many
+    nstar, nplus = 0, 0
+    for p in ps
+        onlystarwildcard(p) && (nstar += 1)
+        (onlypluswildcard(p) || (assoc && onlywildcard(p))) && (nplus += 1)
+    end
+    m - nstar > n && (return empty_set())  # XXX the plus vars must match
+    nfree = n - m + nstar
+    nseq = nstar + nplus        #  number of sequence variables
+
+    if nseq == 0 && nfree > 0
+        return empty_set()   # generator of substitutions
+    end
+
+
+
+    itr = generator_chain((),
+                             () -> fixed_sum(nseq, nfree),
+                             (ks) -> allocate_ks_to_vars(ks, ss, ps, sigma, fn, assoc))
+
+
+
+    MatchObject(itr)
+end
+
+###  --------------------------------------------------
+
+# commutative matching
+function match_sequence(ss, ps, sigma::Dict,
+                        commutative::Type{Val{true}},
+                        fn=:nothing,  assoc=fn==:missing?false:isassociative(fn))
+
+    ss, ps = remove_constant_patterns(ss, ps)
+    for p in ps
+        isconstantpattern(p) && return NO_MATCH
+    end
+    length(ps) == 0 && length(ss) > 0 && return NO_MATCH
+
+    theta = Set((sigma,))
+
+    if length(ps) == 0
+        theta = checked_merge(theta, Set((aDict(),)))
+        return theta
+    end
+
+    
+    itr = generator_chain((),
+                          () -> theta,
+                          sigma -> check_matched_variables(ss, ps, sigma),                                                           sigma -> check_non_variable_patterns(ss, ps, sigma),
+                          sigma -> check_matched_variables(ss, ps, sigma),
+                          sigma -> assoc ? ((sigma,)) : check_regular_variables(ss, ps, sigma),
+                          sigma -> check_sequence_variables(ss, ps, sigma, fn, assoc)
+    )
+
+    MatchObject(itr)
 end
  
-
-##
+    
 
 
 ##################################################
 
-## interfaces
-
-## main function
-
-"""
-
-   `match(pattern, expression, phs=DEFAULT_PHS[1])`: return `PatternMatch` object
-
-
-Pattern matching.
-
-Matching *basically* follows rules laid out for [ginac](http://www.ginac.de/tutorial/#Pattern-matching-and-advanced-substitutions).
-
-An expression has a symbolic representation in terms of a
-[tree](http://docs.sympy.org/dev/tutorial/manipulation.html).
-The `SymPy` docs are clearer, but for now
-consider `sin((x^2+x + 1)^2)`. The function `sin` has an
-argument `x^2` which in turn is the power operation with arguments
-`x^2 + x` and `2`. The `2` is a leaf on the tree, but we can write
-`x^2+x+1` as the `sum` of three arguments, `x^2`, `x`, and `1`. Again,
-`1` is a leaf, `x` -- a symbol -- is also leaf of the tree, but `x^2`
-can be written as the power function with two argumentx `x` and `2`.
-
-In a picture, we might see
-
-```
-    sin
-     |
-    pow 
-    /  \     
-   sum   2
-  /  | \ 
- pow x  1
- / \
-x   2
-```
-
-
-An expression will match a pattern if the two expression trees are
-identical, unless the pattern has a wildcard. For most operations, a
-wild card simply matches any subtree. Wildcards have fixed names `_1`,
-`_2`, ....
-
-So the pattern `sin(_1)` will match `sin((x^2 + 2 + 1)^2)`
-as the function heads match and the `_1` matches the subtree starting from `pow`.
-Similarly, `sin(_1^2)` will match, with `_1`
-matching `x^2 + x + 1`,  the power function matches the exponent
-matches and the wild card  matches the subtree from `sum`. The pattern `sin((x^2 + x + 1)^_1)` will also match, as the `_1` will
-match the exponent `2`. However, `sin(_1^3)` will not match -- the `3`
-does not match the `2`.
-
-The term `x^2 + x + 1` can be matched by `_1`. But will it match `x^2
-+ _1`? Well, here the answer is `no`. We assume `_1` matches a subtree
-and `x+1` is two branches of the tree. For this purpose we have
-`slurping` variables `__1` (two underscores for 3 characters). So `x^2
-+ __1` will match. Slurping variables really only make sense for
-addition and multiplication, but can be used elsewhere.
-
-When a wild card is used more than once in a pattern, it must match
-the same subtree. So `_1^_1` will match `(x+y)^(x+y)` but not
-`x^(x+y)`. The special wildcard `__` can be used in the case where the
-value can change from place to place.
-
-Products and sums are different, in that there can 2 or more arguments
-and these can be represented in the expression tree in an
-unpredictable way.
-
-
-# return value
-
-If the pattern does not match the expression, a `PatternMatch` object is returned with the `match` field being `false`.
-
-If `pattern` matches expression then a `PatternMatch` object is returned with `match=true` and `matches` a dictionary showing how
-the wild cards matched.
-
-
-Examples
-```
-match(sin(_1), sin(x)) # true with _1 => x
-match(sin(_1), sin(cos(x))) # true with _1 => cos(x)
-```
-
-"""
-Base.match(pat::Basic, ex::Basic, phs=DEFAULT_PHS[1]) = pattern_match(ex, pat, phs)
-
-
+## Matching API
+export matches
 
 """
 
-    `ismatch(pattern, expression)`: does pattern match expression *or* subexpression?
+    match(p::Basic, s::Basic, sigma)
 
-Example
+Match subject `s` against pattern `p`.
+
+This is syntactic matching.
+
+An expression can be broken down into an abstract syntax tree.
+
+For example
+* `sin(x^2+1)`  has head `:Sin` and arguments `x^2+1`
+* `x^2 + 1` has head `:Add` and arguments `x^2` and `1`. These arguments are ordered,
+though how is not described here.
+* `x^2` has head `:Pow` and arguments `x` and `2`
+* `1` is a numeric value with no head and no arguments.
+
+The expression `sin(x_)` would match `sin(x^2 + 1)` by matching `x_=>x^2 + 1`. Whereas
+`x_^2` would match `x^2` with `x_=>x`. But `2^x_` would not match `x^2` as 2 does not match `x`.
+The expression `x_^2 + 1` **might** match `x^2 + 1` -- but it *might* not. Why? `:Add` is commutative, but syntactic matching does not take that into account. Use `matches` for such considerations.
+
+
+
+In a picture, the tree would look like
 ```
-ismatch(x, sin(x))  # true, as `x` matches subexpression `x`
-ismatch(x^2, sin(x))  # false
-ismatch(x^2, sin(x^2*cos(x)))  # true, will match the `x^2` in the argument.
+       sin(x^2 + 1)
+             |
+       (:Sin, x^2 + 1)
+                  |
+           (:Add, x^2, 1)
+                  /    |
+          (:Pow, x, 2)
+                /    |
+```
+The expression `sin(x_)` matches ``(:Sin, x^2+1)`, so `x_ => x^2 + 1`
 
-"""
-function Base.ismatch(pat, ex, phs=DEFAULT_PHS[1])
-    pattern_match(ex, pat, phs).match && return true
-
-    exs = SymEngine.get_args(ex)
-    any([ismatch(pat, ex, phs) for ex in exs]) && return true
-
-    return false
+The expression `sin(x_ + 1)` *might* match `x_ => x^2` but might not. It depends on ordering, as this matching does not take into account associativity (how `1+x_` would match `1 + a + b` through `1 + (a+b)`) or commutivity.
+    
+Returns `(success, sigmap)`. If `!success`, `sigmap` may contain nonsense.
+"""    
+function Base.match(p::Basic, s::Basic, sigma=aDict())
+    syntactic_match(s, p, sigma)
 end
 
 
-
 """
+    matches(patterns, subjects, sigma=Dict(); commutative=false, associative=false)
 
-    cases(expessions, pattern)
+Match a list of pattern terms agains a list of subject terms.
 
-Return patternmatches for matches expression and indices of matched expressions
+If `commutative=true` all permutations of subjects are considered.
+
+If `associative=true` wildcards are treated as plus wildcards. (so `x_ + y_ ~ 1 + 2 + 3`)
+
+Patterns have "wildcards" defined through a naming convention:
+
+* variables with one trailing slash, e.g. `x_`, are regular wildcards. They will match one term in the syntax tree unless there is an associative element, in which case they are treated as "plus" wildcards.
+
+* variables with two trailing slashes, e.g. `x__`, are plus wildcards. They will match one or more terms.
+
+* variables with three trailing slashes, e.g., `x___`, are star wildcards. They will match zero, one or more terms.
+
+
+A value `sigma` may be specified ahead of time. This means that any
+match will agree with `sigma` and satisfy `subs.(patterns, sigma...) ~
+subjects`. The default is no specification
+    
+
+The return value is a generator for all valid substitutions:
+
+* use `isempty` to check if there are any matches extending sigma.
+
+* use `first` to get a match, when present. This mutates the generator.
+
+* use `collect` to get all matches. This mutates the generator.
+
+Note: Operations which return a value (or more) mutate the generator. One
+must use `deepcopy` to make a copy should such behaviour be unwelcome.
 
 Examples:
+
+```julia
+
+using SymEngine, SymEngineExtras
+@vars a b c x_ x__ x___ y_ y__ y___
+
+o = matches([x_, y__], [a,b,c]) # associative=false,commutative=false are defaults
+first(o)                        # `x_=>a, y__=>[b,c]`
+o = matches([x_, y__], [a,b,c], associative=true)
+collect(o)                      # `x_=>a, y__=>[b,c]` AND `x_=>[a,b], y__=>[c]`
+o = matches([x_, y__], [a,b,c], commutative=true)
+collect(o)                      # `x_=>a, y__=>[b,c]` AND `x_=>b, y__=>[a,c]` AND `x_=>c, y__=>[a,b]`
+                                # That is, `x_` can match ₃C₁ diferent terms
+o = matches([x_, y__], [a,b,c], commutative=true, associative=true)
+collect(o)                      # 6 matches, as x_ can match ₃C₁ + ₃C₂ terms now
+
+o = matches([x__, y__], [a,b,c])
+collect(o)                      # 2 matches, x__=>[a],  x__=>[a,b] (with y__ absorbing the rest)
+o = matches([x__, y__], [a,b,c], commutative=true)
+collect(o)                      # 6 matches as x__ can match ₃C₁ + ₃C₂ terms
+
+o = matches([x___, y_], [a,b,c])
+collect(o)                      # 1 match, as `y_=>[c]`
+o = matches([x___, y__], [a,b,c])
+collect(o)                      # 3 matches: ₃C₁ matches, as `x___` matches  `x___=>[], x___=>[a]`, and `x___=>[a,b]`
+o = matches([x___, y__], [a,b,c], commutative=true)
+collect(o)                      # 7 = ₃C₀ + ₃C₁ + ₃C₂ matches for `x___`, as y__ must have 1 match
+```
+"""
+function matches(ps, ss, sigma=aDict(); commutative=false, associative=false)
+    out = match_sequence(ss, ps, sigma, Val{commutative}, :nothing, associative)
+end
+
+
+"""
+    matches(pattern, subject, sigma=Dict())
+
+Matches subject against the pattern.
+
+
+"""    
+function matches(pattern::Basic, subject::Basic, sigma=aDict())
+    # depends on head
+    sh, ph = head.((subject,pattern))
+
+    if sh == ph && arity(sh) != 0
+
+        match_sequence(args(subject), args(pattern), sigma,
+                          Val{iscommutative(sh)},
+                          sh, isassociative(sh))
+    else
+        ## when is it okay that p ~ s but of different heads?
+        ## e.g x_ + y___ ~ a with {x_=>a, y___=>[]} --> {x=>a, y=>0}
+        if isassociative(ph) && arity(sh) > 0 # Add or Mul
+            match_sequence([subject], args(pattern), aDict(),
+                           Val{iscommutative(ph)},
+                           ph, isassociative(ph))
+        else
+            matches([pattern], [subject], sigma)
+        end
+    end
+end
     
-```
-pms, inds = cases([x, x^2, x^3], x^_1) # inds = [2,3], pms = [pattern_match(x^2, x^_1), pattern_match(x^3, x^_1)]
-```
+## Add in guards?
 
-Kinda like filter to extract matching expressions, but also returns index relative to original expressions
-"""
-function cases(exs::Vector, pat, phs=DEFAULT_PHS[1])
-    ## return cases and their indices
-    es = PatternMatch[]
-    ind = Int[]
-    for i in 1:length(exs)
-        a = pattern_match(exs[i], pat, phs) 
-        if a.match
-            push!(es, a)
-            push!(ind, i)
-        end
-    end
-    zip(es, ind)
+## Case - not needed
+# cases(ss, p) = filter(s -> !isempty(matches(x_^2, s)), [a,a^2,b^2])
+
+## Replace all
+
+mutable struct SyntaxTreeNode
+fn::Symbol
+ex::Basic
+children::Vector
 end
-export cases
 
-"""
+function expression_tree(ex::Basic)
+    fn = head(ex)
 
-    `find(expression, pattern)` return subexpressions of `ex` that match `pattern` as a `Set`.
-
-Returns a set of matched subexpressions.
-
-Examples
-```
-find(x + x^2 + x^3, x)      # { x }, as x does not match x^2 or x^3
-find(x + x^2 + x^3, x^_1)   # {x^2, x^3}
-find(a*sin(x) + a*sin(y) + b*sin(x) + b*sin(y), sin(_1))  # {sin(x), sin(y)}, matches all four, but a set is returned.
-```
-
-"""
-function Base.find(ex::Basic, pat, s = Set())
-    match(pat, ex).match && push!(s, ex)
-
-    exs = get_args(ex)
-    for ex in exs
-        find(ex, pat, s)
+    if fn in [:Symbol, :Integer]
+        return SyntaxTreeNode(fn, ex,  SyntaxTreeNode[]) # use no children for terminal
+    else
+        exs = args(ex)
+        children = expression_tree.(args(ex)) #[expression_tree(u) for u in exs]
+        SyntaxTreeNode(fn, ex, children)
     end
-
-    s
 end
+
+function node_to_ex(n::SyntaxTreeNode)
+    if isempty(n.children)
+        n.ex
+    else
+        call_fun(n.fn, node_to_ex.(n.children))
+    end
+end
+
+## rewrite :Sin -> :Cos, no arity check... so :Add -> :Sin is an issue
+
+## replace function heads
+function _replace(n::SyntaxTreeNode, f::Symbol, g::Symbol, traverse=true)
+    if n.fn == f
+        n.fn = g
+    end
+    if traverse
+        !isempty(n.children) && _replace.(n.children, f, g, traverse)
+    end
+end
+
+
+## replace function head with functino call
+function _replace(n::SyntaxTreeNode, f::Symbol, g, traverse=true)
+    if traverse && !isempty(n.children)
+        _replace.(n.children, f, g, traverse)
+    end
     
-
-
-
-"""
-
-    `replaceall(ex, lhs => rhs)`: uses lhs as pattern. For each match of pattern, replace with `rhs` which may involve wildcards expressions.
-
-Examples
-```
-replaceall(sin(x), sin(_1) => sin(y))         # sin(y)
-replaceall(a^2+b^2+(x+y)^2 +c, _1^2=>_1^3)    # a^3 + b^3 + (x + y)^3 + c
-replaceall(sin(1+sin(x)), sin(_1)=>cos(_1))   # cos(1 + cos(x)) as recursively defined
-replaceall(x^2 + x^3, _1^_2 => _1^(2*_2))     # x^4 + x^6
-```
-
-"""
-function replaceall(ex, ps::Pair...)
-    replaceall(BasicType(ex), ps...)
-end
-export replaceall
-
-
-
-function replaceall(ex::Union{BasicType{Val{:Mul}},BasicType{Val{:Add}}},
-                    ps::Pair...)
-    exs = SymEngine.get_args(Basic(ex))
-    ex = (prod_sum(ex))([replaceall(ex,  ps...) for ex in exs])
-
-    for p in ps
-        pat, rhs = p
-        m = pattern_match(ex, pat)
-        !m.match && continue
-        ## now substitute
-        for (k,v) in m.matches
-            rhs = subs(rhs, k, v)
-        end
-        ex = rhs
+    if n.fn == f
+        xs = node_to_ex.(n.children)
+        n.ex = g(xs...)
+        n.fn = :Symbol
+        empty!(n.children)
     end
-    ex
-end
-
-## recurse through so that
-# subs(sin(1+sin(x)), sin(_1)=>cos(_1))  # cos(1 + cos(x)) and not cos(1 + sin(x))
-# expand(replaceall(a*sin(x+y)^2+a*cos(x+y)^2+b,cos(_1)^2=>1-sin(_1)^2))  # a+.b
-function replaceall(ex::BasicType, ps::Pair...)
-    ## recursively call, then do top-level
-    fn = SymEngineExtras.get_fun(ex)
-    ex = Basic(ex)
-    args = SymEngine.get_args(ex)
-    if length(args) > 0
-        ex = eval(Expr(:call, fn, [replaceall(arg, ps...) for arg in args]...))
-    end
-    for p in ps
-        pat, rhs = p
-        m = pattern_match(Basic(ex), pat)
-        !m.match && continue
-        ## now substitute
-        for (k,v) in m.matches
-            rhs = subs(rhs, k, v)
-        end
-        ex = rhs
-    end
-
-    ex
 end
 
 
-##
+## replace call f on expression. If true, replace with g(args)
+function _replace(n::SyntaxTreeNode, f, g, traverse=true)
+    if traverse && !isempty(n.children)
+        _replace.(n.children, f, g, traverse)
+    end
+
+    
+    val = f(n.ex)
+    if val
+        n.ex = g(n.ex)
+        n.fn = :Symbol
+        empty!(n.children)
+    end
+end
+
+## replace expressions
+function _replace(n::SyntaxTreeNode, pattern::Basic, rpattern::Basic, traverse=true)
+    
+    if traverse && !isempty(n.children)
+        _replace.(n.children, pattern, rpattern, traverse)
+    end
+
+    ex = node_to_ex(n)
+    m = matches(pattern, ex)
+    val = isempty(m)
+
+    if !val
+        sigma = first(m)
+        n.ex = subs(ex, subs(pattern, sigma...), subs(rpattern, sigma...))
+        # now trick node
+        n.fn = :Symbol
+        empty!(n.children)
+    end
+
+end
+
 ## replace
-## rewrite(sin(x)*cos(y), sin(_1)*cos(_2)*__1,(sin(_1+_2) + cos(_1-_2))*__1)
-function rewrite(ex, pat, rpat)
-    p = match(pat, ex)
+import Base: replace
+"""
 
-    !ismatch(p) && return ex
-    subs(rpat, matches(p)...)
-end
-        
+    replace(ex::Basic, pattern, rpattern, traverse=true)
+
+Replace parts o expression `ex` using a pattern and a replacement
+pattern. If `traverse=true`, then descend syntax tree for
+replacements. Otherwise, only the top-level is considered.
+
+The replacement dependson the type of pattern/rppattern:
     
+* `pattern::Basic, rpattern::Basic`
+
+    The pattern with wildcards is matched agains the (sub) expressions of `ex`. When there is a match, the *first* substitution found is used to substitute in the (sub) expression using this match.
+    
+* `pattern::Symbol, rpattern::Symbol`
+
+    The symbols represent function heads. For example, `sin(x)` has head `:Sin`. The syntax tree is looked at and each occurrence of thefunction head `f` is replaced by the function head `g`.
+        
+* `pattern::Symbol, rpattern::function`
+
+    The symbol represents a function head. For example, `sin(x)` has head `:Sin`. The syntax tree is looked at and each occurrence of the function head `f` is replaced by the function `g(args...)`.
+
+* `pattern::function, rpattern::function`
+
+        Each subexpression `ex` is tested by the `pattern` function. If true, the expression is replaced by `g(ex)`.
+
+"""
+function replace(ex::Basic, pattern, rpattern, traverse=true)
+    n = expression_tree(ex)
+    _replace(n, pattern, rpattern, traverse)
+    node_to_ex(n)
+end
+
+replace(ex::Basic, pr::Pair, traverse=true) = replace(ex, pr..., traverse)
