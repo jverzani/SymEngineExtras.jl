@@ -329,9 +329,9 @@ end
 
 ## reduce after partial substitutions. Return multiset
 function reduce_subjects_patterns(subjects, patterns, sigma)
-    mss = Multiset(subjects)
+    mss = Multiset(collect(subjects))  # collect so tuples work
     ps = psubs(patterns, sigma)
-    mps = Multiset(ps)
+    mps = Multiset(collect(ps))
     mss - mps, mps - mss
 end
 
@@ -450,7 +450,7 @@ end
 ## Check for sequence variables
 
 ## return generator
-function _check_sv_init(ss, ps, sigma, assoc, allvars, svals, N)
+function _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N)
     ss, ps = remove_constant_patterns(ss, ps, sigma)
 
     plusvs = Basic[]
@@ -562,7 +562,7 @@ function check_sequence_variables(ss, ps, sigma,
     N = Int[]
 
     o = generator_chain((),
-                        () -> _check_sv_init(ss, ps, sigma, assoc, allvars, svals, N),
+                        () -> _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N),
                         (sols) -> _allocate_sols(sols, sigma, fn, allvars, svals, N))
 
     o
