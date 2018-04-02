@@ -645,10 +645,12 @@ function match_sequence(ss, ps, sigma, commutative::Type{Val{false}},
     end
 
 
-
+    
+    theta = Set() # is there a uniqueness issue?
     itr = generator_chain((),
-                             () -> fixed_sum(nseq, nfree),
-                             (ks) -> allocate_ks_to_vars(ks, ss, ps, sigma, fn, assoc))
+                          () -> fixed_sum(nseq, nfree),
+                          (ks) -> allocate_ks_to_vars(ks, ss, ps, sigma, fn, assoc)
+                          )
 
 
 
