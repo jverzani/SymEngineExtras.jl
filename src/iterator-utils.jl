@@ -10,8 +10,7 @@ using ResumableFunctions
 @resumable function fixed_sum(n, tot, ps=())
     if n == 0
         @yield ()
-        return
-#    n > tot && return ()
+        return nothing
     ## for all (k1, k2, ..., kseq) st sum(ks) = nfree
     elseif n == 1
         @yield (tot, ps...)
@@ -27,13 +26,13 @@ end
 # This comes from https://github.com/HPAC/matchpy/blob/master/matchpy/utils.py
 # MIT licensed
 # solve ax + by = c
-# XXX: return (-1,-1) for nothing? 
+# XXX: return (-1,-1) for nothing?
 @resumable function base_solution_linear(a,b,c)
 
     @assert a > 0 && b > 0 && c >= 0
 
     NO_SOL = nothing
-    
+
     d = gcd(a,b,c)
     a,b,c = div.((a,b,c), d)
 
@@ -42,7 +41,7 @@ end
     else
         d, x0, y0 = gcdx(a, b)  # d = x0*a + y0*b
 
-        !iszero(rem(c,d)) && return NO_SOL
+        !iszero(rem(c,d)) && return nothing
 
         x, y = c*x0, c*y0
 
@@ -64,26 +63,28 @@ end
             end
         end
     end
-    NO_SOL
+#    NO_SOL
 end
 
 ## solve x1*a + x2*b + ... = c for non-negative solutions
 @resumable function solve_linear_diophantine(c, xs)
+
+
     NO_SOL = nothing
 
     n = length(xs)
-    n == 0 && return NO_SOL
+    n == 0 && return nothing
     if n == 1
         d,r = divrem(c, xs[1])
         r == 0 && @yield (d,)
-        return NO_SOL
+        return nothing
     end
     if n == 2
         u = base_solution_linear(xs[1], xs[2], c)
         for v in u
             @yield v
         end
-        return NO_SOL
+        return nothing
     end
 
     d = gcd(xs...)
@@ -99,7 +100,7 @@ end
 
     NO_SOL
 end
-    
+
 # trim iterator to yield only unique values
 @resumable function just_unique(itr)
     theta = Any[]
@@ -141,57 +142,98 @@ init
 gs
 sts
 vals
+needall
 end
 
 
-function generator_chain(init, fs...)
-    GeneratorChain(fs, init, Any[], Any[], Any[])
+function generator_chain(init, fs...; needall=false)
+    GeneratorChain(fs, init, Any[], Any[], Any[], needall)
 end
 
-Base.iteratorsize(itertype::GeneratorChain) = Base.SizeUnknown()
-function Base.start(o::GeneratorChain)
+Base.IteratorSize(itertype::GeneratorChain) = Base.SizeUnknown()
 
-    g1 = o.fs[1](o.init...)
-    st =start(g1)
 
+# compute generator for level i
+# using input from level i-1. If i-1==0, then usese init...
+# finds first element of generator
+# * if non empty, stores generator, state, value and return true
+# * if empty, return false
+function compute_gi(o, i)
+    fi = o.fs[i]
+    gi = i == 1 ? fi(o.init...) : fi(o.vals[i-1])
+
+    iter_val = iterate(gi)
+    isnothing(iter_val) && return false
+
+    val, st = iter_val
+    push!(o.gs, gi)
+    push!(o.sts, st)
+    push!(o.vals, val)
+
+    return true
+end
+
+# Move to end
+function Base.iterate(o::GeneratorChain)
     empty!(o.gs)
     empty!(o.sts)
     empty!(o.vals)
-    push!(o.gs, g1)
-    push!(o.sts, st)
-    st
+    for (i, fi) in enumerate(o.fs)
+        if !compute_gi(o,i)
+            o.needall && return (missing, true)
+            break
+        end
+    end
+    return (o.vals[end], true)
 end
 
-# advance to next tip
-function Base.done(o::GeneratorChain, st)
-    # is vals empty? If not, pop!
-    !isempty(o.vals) && return false
+function Base.iterate(o::GeneratorChain, st)
+    !st && return nothing
 
-    # okay, work back down
-    while done(o.gs[end], o.sts[end])
-        pop!(o.gs)
-        pop!(o.sts)
-        isempty(o.gs) && return true
+    ## state is kept in o
+    k = length(o.sts)
+    iszero(k) && return nothing
+    n = length(o.fs)
+
+    iter_val = iterate(o.gs[k], o.sts[k])
+    if !isnothing(iter_val)
+        ## move forward
+        val, st = iter_val
+        o.vals[k] = val
+        o.sts[k] = st
+
+        for i in (k+1):length(o.fs)
+            if !compute_gi(o,i)
+                o.needall && return (missing, true)
+                break
+            end
+        end
+        return (o.vals[end], true)
     end
 
-    # now back up
-    i, n = length(o.gs), length(o.fs)
 
-    val, o.sts[end] = next(o.gs[end], o.sts[end])
-    for fn in o.fs[(i+1):n]
-        gi = fn(val)
-        st = start(gi)
-        done(gi, st) && return done(o, st)
-        val, st = next(gi, st)
-        push!(o.gs, gi)
-        push!(o.sts, st)
+    while isnothing(iter_val)
+        pop!(o.gs); pop!(o.sts); pop!(o.vals)
+        k = length(o.sts)
+        iszero(k) && return nothing
+
+        iter_val =  iterate(o.gs[k], o.sts[k])
     end
 
-    push!(o.vals, val)
-    return false
-end
+    # Now go forward base one
+    isnothing(iter_val) && return nothing
+    val, st = iter_val
+    o.sts[k] = st
+    o.vals[k] = val
 
-function Base.next(o::GeneratorChain, st)
-    pop!(o.vals), st
-end
+    # now go to tip
+    for i in (k+1):length(o.fs)
+        if !compute_gi(o,i)
+            o.needall && return (missing, true)
+            break
+                break
+            end
+    end
+    return (o.vals[end], true)
 
+end

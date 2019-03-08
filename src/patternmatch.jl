@@ -7,7 +7,7 @@
 ## Part of the code in `pm.jl` is derived from the MIT licensed code
 ## of https://github.com/HPAC/matchpy/blob/master/matchpy/
 ##
-## 
+##
 ## SymEngine things
 BasicType = SymEngine.BasicType
 
@@ -93,7 +93,7 @@ end
 # ## Evaluate a constraint returning true or false using values in x, a dictionary
 # (p::Constraint)(x)::Bool = p.op(p.lhs(x...), p.rhs(x...))
 
-# # the main constraints    
+# # the main constraints
 # Gt(a,b)  = Constraint(>,  Basic(a),Basic(b))
 # Ge(a,b)  = Constraint(>=, Basic(a),Basic(b))
 # Eq(a,b)  = Constraint(==, Basic(a),Basic(b))
@@ -160,7 +160,9 @@ end
 function checked_merge(theta::Set, sigma::Dict)
     if length(theta) >= 1
         cmpts = filter(d -> compatible_substitutions(d, sigma), theta)
-        map(u->merge(sigma, u), cmpts)
+        #map(u->merge(sigma, u), cmpts)
+        Set(merge(sigma, u) for u in cmpts)
+
     else
         Set((sigma, ))
     end
@@ -190,9 +192,10 @@ U = Union{Basic, Vector{Basic}, Tuple{Symbol, Vector{Basic}}}
 #aDict(args...) = Dict{Basic, U}(args...)
 aDict(args...) = Dict{Basic, Any}(args...)
 empty_set() = Set(Dict{Basic, Any}[])
-    
+
 const blank_dict = aDict()
-const ↯ = (false, blank_dict)
+#const ↯ = (false, blank_dict) # \downzigzagarrow
+const ∅ = (false, blank_dict) # \downharpoonarrowright
 const NO_MATCH = Set(Dict{Basic,Any}[])
 
 
@@ -204,23 +207,23 @@ const NO_MATCH = Set(Dict{Basic,Any}[])
 function syntactic_match(s, p, sigma=aDict())  # subject, pattern, sigma::Dict
 
     isconstantpattern(p) && return (p==s, blank_dict)
-    
+
     if onlywildcard(p)
         sigmap = aDict(p=>s)
         val = compatible_substitutions(sigma, sigmap)
         return (val ? (val, merge(sigma, sigmap)) :  (val, sigma))
     end
 
-    head(s) != head(p) && return (false,↯)
+    head(s) != head(p) && return (false,∅)
 
     s_args, p_args = args(s), args(p)
-    length(s_args) != length(p_args) && return (false, ↯)
+    length(s_args) != length(p_args) && return (false, ∅)
 
     for i in eachindex(s_args)
         success, sigmap = syntactic_match(s_args[i], p_args[i], sigma)
 
-        !success && return  (false, ↯)
-        !compatible_substitutions(sigmap, sigma) && return (false, ↯)
+        !success && return  (false, ∅)
+        !compatible_substitutions(sigmap, sigma) && return (false, ∅)
 
         merge!(sigma, sigmap)
     end
@@ -250,13 +253,13 @@ Length `ss` must be 1 to match, unless`p` is a star or plus wildcard
 Returns a set extending theta.
 """
 function match_one_to_one(ss, p, theta::Set=Set((aDict(),)),
-                          comm=false,  fn=:nothing, assoc=fn==:nothing?false:isassociative(fn))
-    
+                          comm=false,  fn=:nothing, assoc=fn==:nothing ? false : isassociative(fn))
+
     n = length(ss)
     # p in F0
-    if isconstantpattern(p) 
+    if isconstantpattern(p)
 
-        n == 1 && p == ss[1] && return checked_merge(theta, aDict())  
+        n == 1 && p == ss[1] && return checked_merge(theta, aDict())
 
     elseif onlywildcard(p) && !assoc        # regular variable pattern
 
@@ -289,19 +292,19 @@ function match_one_to_one(ss, p, theta::Set=Set((aDict(),)),
             return out
         end
     end
-    
+
     return NO_MATCH
-    
+
 end
 ##################################################
 
 ## If p is a pattern and s a subject, then a match is a
 ## dictionary sigma whose keys are wildcards such that
 ## p(sigma...) = s
-## 
+##
 ## This function performs a partial substitution by sigma
 function _psubs(patterns, sigma::Pair{Basic, Basic})
-    subs.(patterns, sigma)
+    subs.(patterns, (sigma,))
 end
 
 # [x_,x__,y_] subs {x_=>1, x__=>[2,3,4], y_=>[5,6]} --> [1, 2,3,4,5,6] flattened one level
@@ -356,7 +359,7 @@ function remove_constant_patterns(subjects, patterns, sigma=Dict())
 end
 
 # check that matched variables in sigma are goo
-function check_matched_variables(subjects, patterns, sigma::Dict)
+    function check_matched_variables(subjects, patterns, sigma::Dict)
     if so_far_so_good(subjects, patterns, sigma)
         (sigma,)
     else
@@ -372,7 +375,7 @@ function _ms(u)
     p,s,sigma = u
     hp, hs = head(p), head(s)
     hp != hs && return ()
-    
+
     comm = Val{iscommutative(hp)}
     fn, assoc = isassociative(hp) ? (hp, true) : (:nothing, false)
 
@@ -396,12 +399,13 @@ function check_non_variable_patterns(ss, ps, sigma)
     ps = collect(Iterators.filter(!iswildcard, collect(ps))) # compound expressions
 
     isempty(ps) && return (sigma,)
-    
+
+
     theta = Set()
     op = generator_chain((sigma,),
                             ((sigma) -> _check_pp(ps[i], collect(ss), sigma) for i in eachindex(ps))...,
                             (sigma) -> sigma in theta ? () : (push!(theta, sigma); (sigma,))
-                            )
+                                )
     op
 end
 
@@ -424,7 +428,6 @@ function assign_wildcard(p, k, sks,svs, sigma)
 end
 
 function check_regular_variables(subjects, patterns, sigma::Dict)
-
     ## we reduce subjects, patterns, then use our algorithm
     ss, ps = remove_constant_patterns(subjects, patterns, sigma)
 
@@ -436,7 +439,7 @@ function check_regular_variables(subjects, patterns, sigma::Dict)
                         () -> ((sks, svs, sigma),),
                         (u-> assign_wildcard(p, v, u...) for (p,v) in zip(pks, pvs))...,
                         (u) -> ((u[3],))
-                           )
+                            )
     o
 end
 
@@ -451,6 +454,7 @@ end
 
 ## return generator
 function _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N)
+
     ss, ps = remove_constant_patterns(ss, ps, sigma)
 
     plusvs = Basic[]
@@ -462,19 +466,19 @@ function _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N)
             push!(starvs, p)
         end
     end
-    
+
     nplus = length(plusvs)
     if nplus > length(ss)
         return empty_set() # too many plus variables
     end
 
-    
+
     nstars = length(starvs)
     _svals, scnts = tally(ss)
     plusvals, pluscnts = tally(plusvs)
     starvals, starcnts = tally(starvs)
 
-    
+
     theta = empty_set()
 
     empty!(allvars)
@@ -483,7 +487,7 @@ function _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N)
     append!(svals, _svals)
     empty!(N)
     push!(N, length(plusvals))
-    
+
     ## nothing to do
     if isempty(allvars) # nothing to do
         if length(ss) > 0
@@ -505,7 +509,7 @@ function _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N)
         return out
     end
 
-    
+
     cfs = vcat(pluscnts, starcnts)
 
     gens = (solve_linear_diophantine(cnt, cfs) for cnt in scnts)
@@ -515,7 +519,7 @@ function _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N)
 end
 
 function _allocate_sols(sols, sigma, fn, allvars, svals, N)
-    
+
     d = aDict()
     star_ok = true
 
@@ -556,16 +560,18 @@ end
 ## The code copies some of that in matchpy for solving linear diophantine equations
 function check_sequence_variables(ss, ps, sigma,
                                   fn=:nothing, assoc=false)
-    
+
     allvars= Basic[]  # not so pretty as we want to share values across chain
     svals = Basic[]
     N = Int[]
 
     o = generator_chain((),
                         () -> _check_sv_init(ss, ps, sigma, fn, assoc, allvars, svals, N),
-                        (sols) -> _allocate_sols(sols, sigma, fn, allvars, svals, N))
+                        (sols) -> _allocate_sols(sols, sigma, fn, allvars, svals, N),
+                        needall=true
+                        )
 
-    o
+    Base.Iterators.filter(!ismissing, o)
 end
 
 ### --------------------------------------------------
@@ -587,11 +593,8 @@ end
 struct MatchObject <: AbstractMatchObject
 itr
 end
-Base.iteratorsize(itertype::MatchObject)= Base.SizeUnknown()
-Base.start(o::MatchObject) = start(o.itr)
-
-Base.done(o::MatchObject, st) = done(o.itr, st)
-Base.next(o::MatchObject, st) = next(o.itr, st)
+Base.IteratorSize(itertype::MatchObject)= Base.SizeUnknown()
+Base.iterate(o::MatchObject, args...) = iterate(o.itr, args...)
 
 ###  --------------------------------------------------
 
@@ -599,9 +602,9 @@ Base.next(o::MatchObject, st) = next(o.itr, st)
 function allocate_ks_to_vars(ks, ss, ps, sigma, fn, assoc)
     i,j=0,0 #1,1
     thetap = Set((deepcopy(sigma),))
-        
+
     for pl in ps
-        lsub = 1 
+        lsub = 1
         if ispluswildcard(pl) || (iswildcard(pl) && assoc)
             lsub = lsub + ks[1+j]
             if onlystarwildcard(pl)
@@ -616,7 +619,7 @@ function allocate_ks_to_vars(ks, ss, ps, sigma, fn, assoc)
         if isempty(thetap)
             break
         end
-        i += lsub 
+        i += lsub
     end
 
     thetap
@@ -625,10 +628,10 @@ end
 
 ## non-commutative matching
 function match_sequence(ss, ps, sigma, commutative::Type{Val{false}},
-                        fn=:nothing, assoc=fn==:nothing?false:isassociative(fn))
+                        fn=:nothing, assoc=fn==:nothing ? false : isassociative(fn))
 
     n, m = length(ss), length(ps)
-    
+
     ## number of star variables (zero, onem or more). Here
     ## m - nstar number of patterns that must match, if more than n too many
     nstar, nplus = 0, 0
@@ -645,7 +648,7 @@ function match_sequence(ss, ps, sigma, commutative::Type{Val{false}},
     end
 
 
-    
+
     theta = Set() # is there a uniqueness issue?
     itr = generator_chain((),
                           () -> fixed_sum(nseq, nfree),
@@ -662,7 +665,7 @@ end
 # commutative matching
 function match_sequence(ss, ps, sigma::Dict,
                         commutative::Type{Val{true}},
-                        fn=:nothing,  assoc=fn==:missing?false:isassociative(fn))
+                        fn=:nothing,  assoc=fn==:missing ? false : isassociative(fn))
 
     ss, ps = remove_constant_patterns(ss, ps)
     for p in ps
@@ -677,10 +680,9 @@ function match_sequence(ss, ps, sigma::Dict,
         return theta
     end
 
-    
     itr = generator_chain((),
                           () -> theta,
-                          sigma -> check_matched_variables(ss, ps, sigma),                                                           sigma -> check_non_variable_patterns(ss, ps, sigma),
+                          sigma -> check_matched_variables(ss, ps, sigma),                               sigma -> check_non_variable_patterns(ss, ps, sigma),
                           sigma -> check_matched_variables(ss, ps, sigma),
                           sigma -> assoc ? ((sigma,)) : check_regular_variables(ss, ps, sigma),
                           sigma -> check_sequence_variables(ss, ps, sigma, fn, assoc)
@@ -688,8 +690,8 @@ function match_sequence(ss, ps, sigma::Dict,
 
     MatchObject(itr)
 end
- 
-    
+
+
 
 
 ##################################################
@@ -734,9 +736,9 @@ In a picture, the tree would look like
 The expression `sin(x_)` matches ``(:Sin, x^2+1)`, so `x_ => x^2 + 1`
 
 The expression `sin(x_ + 1)` *might* match `x_ => x^2` but might not. It depends on ordering, as this matching does not take into account associativity (how `1+x_` would match `1 + a + b` through `1 + (a+b)`) or commutivity.
-    
+
 Returns `(success, sigmap)`. If `!success`, `sigmap` may contain nonsense.
-"""    
+"""
 function Base.match(p::Basic, s::Basic, sigma=aDict())
     syntactic_match(s, p, sigma)
 end
@@ -763,7 +765,7 @@ Patterns have "wildcards" defined through a naming convention:
 A value `sigma` may be specified ahead of time. This means that any
 match will agree with `sigma` and satisfy `subs.(patterns, sigma...) ~
 subjects`. The default is no specification
-    
+
 
 The return value is a generator for all valid substitutions:
 
@@ -817,7 +819,7 @@ end
 Matches subject against the pattern.
 
 
-"""    
+"""
 function matches(pattern::Basic, subject::Basic, sigma=aDict())
     # depends on head
     sh, ph = head.((subject,pattern))
@@ -839,7 +841,7 @@ function matches(pattern::Basic, subject::Basic, sigma=aDict())
         end
     end
 end
-    
+
 ## Add in guards?
 
 ## Case - not needed
@@ -891,7 +893,7 @@ function _replace(n::SyntaxTreeNode, f::Symbol, g, traverse=true)
     if traverse && !isempty(n.children)
         _replace.(n.children, f, g, traverse)
     end
-    
+
     if n.fn == f
         xs = node_to_ex.(n.children)
         n.ex = g(xs...)
@@ -907,7 +909,7 @@ function _replace(n::SyntaxTreeNode, f, g, traverse=true)
         _replace.(n.children, f, g, traverse)
     end
 
-    
+
     val = f(n.ex)
     if val
         n.ex = g(n.ex)
@@ -918,7 +920,7 @@ end
 
 ## replace expressions
 function _replace(n::SyntaxTreeNode, pattern::Basic, rpattern::Basic, traverse=true)
-    
+
     if traverse && !isempty(n.children)
         _replace.(n.children, pattern, rpattern, traverse)
     end
@@ -948,15 +950,15 @@ pattern. If `traverse=true`, then descend syntax tree for
 replacements. Otherwise, only the top-level is considered.
 
 The replacement dependson the type of pattern/rppattern:
-    
+
 * `pattern::Basic, rpattern::Basic`
 
     The pattern with wildcards is matched agains the (sub) expressions of `ex`. When there is a match, the *first* substitution found is used to substitute in the (sub) expression using this match.
-    
+
 * `pattern::Symbol, rpattern::Symbol`
 
     The symbols represent function heads. For example, `sin(x)` has head `:Sin`. The syntax tree is looked at and each occurrence of thefunction head `f` is replaced by the function head `g`.
-        
+
 * `pattern::Symbol, rpattern::function`
 
     The symbol represents a function head. For example, `sin(x)` has head `:Sin`. The syntax tree is looked at and each occurrence of the function head `f` is replaced by the function `g(args...)`.

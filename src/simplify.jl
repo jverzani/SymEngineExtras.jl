@@ -38,7 +38,7 @@ get_fun(ex::BasicType{Val{:Symbol}}) = :identity
 get_fun(ex::BasicType{Val{:Integer}}) = :identity
 get_fun(ex::BasicType{Val{:Rational}}) = :identity
 get_fun(ex::BasicType{Val{:Complex}}) = :identity
-    
+
 function get_fun(u::BasicType)
     ex = Basic(u)
     as = args(ex)
@@ -59,7 +59,7 @@ function sc(ex)
     @vars u_ v_ x___
     out = replace(ex,
                   sin(u_)*cos(v_)*x___,
-                  (isempty(x___)?Basic(1):prod(x___)) * (sin(expand(v_ + u_)) + sin(expand(u_ - v_))))
+                  (isempty(x___) ? Basic(1) : prod(x___)) * (sin(expand(v_ + u_)) + sin(expand(u_ - v_))))
     expand(out)
 end
 
@@ -107,7 +107,7 @@ end
 
 ### expand trig -- sin(x+y) -> sin(x)*sin(y) + cos(x)*cos(y)
 function sxy(ex)
-    @vars x_ y_ x___ 
+    @vars x_ y_ x___
     ex = replace(ex, sin(x_ + y_) * x___ => x___ * (sin(x_)*cos(y_) + sin(y_) * cos(x_)))
 #    m = match(ex, sin(x_*y_))
 #    !ismatch(m) && return ex
@@ -116,7 +116,7 @@ function sxy(ex)
 end
 
 function cxy(ex)
-    @vars x_ y_ x___ 
+    @vars x_ y_ x___
     replace(ex, cos(x_ + y_) * x___ => x___ * (cos(x_)*cos(y_) - sin(x_) * sin(y_)))
 end
 
@@ -199,7 +199,7 @@ function _simp(T::TrigSimp, ex::BasicType{Val{:Pow}})
         @vars u_
         op = head(a)
         op == :Sin  && return replace(a^2, sin(u_)^2,   1//2*(1 - cos(2*u_)))  * a^(b-2)
-        op == :Cos  && return replace(a^2, cos(u_)^2,   1//2*(1 + cos(2*u_)))  * a^(b-2)        
+        op == :Cos  && return replace(a^2, cos(u_)^2,   1//2*(1 + cos(2*u_)))  * a^(b-2)
         op == :Sinh && return replace(a^2, sinh(u_)^2, -1//2*(1 - cosh(2*u_))) * a^(b-2)
         op == :Cosh && return replace(a^2, cosh(u_)^2,  1//2*(1 + cosh(2*u_))) * a^(b-2)
     elseif head(b) == :Integer && b <= -1
@@ -240,5 +240,3 @@ _simp(T::ExpandTrig, ex::BasicType{Val{:Cos}}) = cxy(Basic(ex))
 
 
 ##################################################
-
-
